@@ -180,5 +180,5 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [Common Table Expressions](15-Common Table Expressions.md)
-- [Materialized Views](17-Materialized Views.md)
+- [Common Table Expressions](15-Common-Table-Expressions.md)
+- [Materialized Views](17-Materialized-Views.md)

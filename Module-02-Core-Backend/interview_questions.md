@@ -13,7 +13,7 @@ For every topic, answer in this order: definition, invariant, request flow, fail
 
 ## Related Topics
 
-- [HTTP Fundamentals](01-HTTP Fundamentals.md)
-- [Authentication Flow](11-Authentication Flow.md)
-- [Asynchronous Processing](19-Asynchronous Processing.md)
-- [Observability Fundamentals](23-Observability Fundamentals.md)
+- [HTTP Fundamentals](01-HTTP-Fundamentals.md)
+- [Authentication Flow](11-Authentication-Flow.md)
+- [Asynchronous Processing](19-Asynchronous-Processing.md)
+- [Observability Fundamentals](23-Observability-Fundamentals.md)

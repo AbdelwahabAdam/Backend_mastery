@@ -180,5 +180,5 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [SQL JOINs](10-SQL JOINs.md)
-- [EXISTS vs IN](12-EXISTS vs IN.md)
+- [SQL JOINs](10-SQL-JOINs.md)
+- [EXISTS vs IN](12-EXISTS-vs-IN.md)

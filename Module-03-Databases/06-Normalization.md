@@ -180,5 +180,5 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [Schema Design](05-Schema Design.md)
+- [Schema Design](05-Schema-Design.md)
 - [Denormalization](07-Denormalization.md)

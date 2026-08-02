@@ -114,7 +114,7 @@ Use idempotency keys, ledger/database constraints, provider reconciliation, outb
 - Measure and roll out safely.
 
 ## Related Topics
-- [System Design Fundamentals](01-System Design Fundamentals.md)
+- [System Design Fundamentals](01-System-Design-Fundamentals.md)
 - [Idempotency](32-Idempotency.md)
-- [Timeout Pattern](37-Timeout Pattern.md)
-- [System Design Case Studies](56-System Design Case Studies.md)
+- [Timeout Pattern](37-Timeout-Pattern.md)
+- [System Design Case Studies](56-System-Design-Case-Studies.md)

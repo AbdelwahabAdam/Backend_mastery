@@ -14,7 +14,7 @@ Add metrics, traces, dashboards, alert/runbook, Docker configuration, graceful s
 
 ## Related Topics
 
-- [REST APIs](02-REST APIs.md)
-- [Refresh Tokens](09-Refresh Tokens.md)
-- [Background Workers](17-Background Workers.md)
+- [REST APIs](02-REST-APIs.md)
+- [Refresh Tokens](09-Refresh-Tokens.md)
+- [Background Workers](17-Background-Workers.md)
 - [Monitoring](22-Monitoring.md)

@@ -180,7 +180,7 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [Stored Procedures and Functions](18-Stored Procedures and Functions.md)
-- [Composite Indexes](20-Composite Indexes.md)
-- [Query Execution Plans](22-Query Execution Plans.md)
-- [Query Optimization](23-Query Optimization.md)
+- [Stored Procedures and Functions](18-Stored-Procedures-and-Functions.md)
+- [Composite Indexes](20-Composite-Indexes.md)
+- [Query Execution Plans](22-Query-Execution-Plans.md)
+- [Query Optimization](23-Query-Optimization.md)

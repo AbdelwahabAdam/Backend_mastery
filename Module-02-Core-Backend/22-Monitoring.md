@@ -188,6 +188,6 @@ Next, challenge the first design. Ask whether a database constraint is safer tha
 
 Study these next:
 
-- [Error Handling](21-Error Handling.md)
-- [Observability Fundamentals](23-Observability Fundamentals.md)
+- [Error Handling](21-Error-Handling.md)
+- [Observability Fundamentals](23-Observability-Fundamentals.md)
 - [Logging](20-Logging.md)

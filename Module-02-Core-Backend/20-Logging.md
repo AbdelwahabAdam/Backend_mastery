@@ -188,6 +188,6 @@ Next, challenge the first design. Ask whether a database constraint is safer tha
 
 Study these next:
 
-- [Asynchronous Processing](19-Asynchronous Processing.md)
-- [Error Handling](21-Error Handling.md)
+- [Asynchronous Processing](19-Asynchronous-Processing.md)
+- [Error Handling](21-Error-Handling.md)
 - [Monitoring](22-Monitoring.md)

@@ -103,6 +103,6 @@ Add input limits, cancellation/time budgets, concurrency ownership, metrics, and
 - Automate regression checks.
 
 ## Related Topics
-- [Time Complexity](02-Time Complexity.md)
-- [Hash Tables](11-Hash Tables.md)
-- [Backend DSA Patterns](41-Backend DSA Patterns.md)
+- [Time Complexity](02-Time-Complexity.md)
+- [Hash Tables](11-Hash-Tables.md)
+- [Backend DSA Patterns](41-Backend-DSA-Patterns.md)

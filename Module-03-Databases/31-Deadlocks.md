@@ -180,7 +180,7 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [Database Locks](30-Database Locks.md)
-- [Optimistic vs Pessimistic Locking](32-Optimistic vs Pessimistic Locking.md)
+- [Database Locks](30-Database-Locks.md)
+- [Optimistic vs Pessimistic Locking](32-Optimistic-vs-Pessimistic-Locking.md)
 - [Transactions](27-Transactions.md)
 - [ACID](28-ACID.md)

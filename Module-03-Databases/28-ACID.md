@@ -181,5 +181,5 @@ When measured read cost or access patterns justify duplicated data and the team 
 Study these next:
 
 - [Transactions](27-Transactions.md)
-- [Isolation Levels](29-Isolation Levels.md)
-- [Database Locks](30-Database Locks.md)
+- [Isolation Levels](29-Isolation-Levels.md)
+- [Database Locks](30-Database-Locks.md)

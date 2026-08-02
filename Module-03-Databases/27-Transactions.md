@@ -180,7 +180,7 @@ When measured read cost or access patterns justify duplicated data and the team 
 
 Study these next:
 
-- [Query Anti Patterns](26-Query Anti Patterns.md)
+- [Query Anti Patterns](26-Query-Anti-Patterns.md)
 - [ACID](28-ACID.md)
-- [Isolation Levels](29-Isolation Levels.md)
-- [Database Locks](30-Database Locks.md)
+- [Isolation Levels](29-Isolation-Levels.md)
+- [Database Locks](30-Database-Locks.md)

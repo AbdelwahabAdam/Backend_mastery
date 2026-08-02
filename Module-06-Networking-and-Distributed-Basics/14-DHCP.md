@@ -119,5 +119,5 @@ Do not rely on process-local state. Use durable constraints, idempotency, partit
 - Test restart and partial failure.
 
 ## Related Topics
-- [Backend Concurrency Patterns](32-Backend Concurrency Patterns.md)
-- [Failure Handling](34-Failure Handling.md)
+- [Backend Concurrency Patterns](32-Backend-Concurrency-Patterns.md)
+- [Failure Handling](34-Failure-Handling.md)

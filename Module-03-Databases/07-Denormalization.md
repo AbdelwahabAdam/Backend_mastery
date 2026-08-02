@@ -181,4 +181,4 @@ When measured read cost or access patterns justify duplicated data and the team 
 Study these next:
 
 - [Normalization](06-Normalization.md)
-- [SQL DDL](08-SQL DDL.md)
+- [SQL DDL](08-SQL-DDL.md)
