@@ -139,7 +139,7 @@ Use this for fast revision. Every topic has its own definition, a plain-English 
 
 ## How to revise
 
-1. Read each `In short` line aloud.
+1. Read each **Definition** line aloud.
 2. Explain the example without looking.
 3. Open the linked chapter when you cannot state the invariant, failure mode, or trade-off.
 

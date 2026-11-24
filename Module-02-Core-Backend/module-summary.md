@@ -135,6 +135,17 @@ flowchart LR
 
 Use a service for a business workflow involving rules or multiple dependencies.
 
+```ts
+async function placeOrder(cmd: PlaceOrderCommand, deps: { db: Db; orders: OrderRepo; inventory: InventoryRepo; outbox: Outbox }) {
+  return deps.db.transaction(async (tx) => {
+    await deps.inventory.reserve(tx, cmd.sku, cmd.quantity);
+    const order = await deps.orders.create(tx, cmd);
+    await deps.outbox.add(tx, "order.created", { orderId: order.id });
+    return order;
+  });
+}
+```
+
 ```python
 async def place_order(command, orders, inventory, outbox):
     async with orders.transaction():
@@ -159,6 +170,14 @@ Avoid extremes:
 ### Dependency injection
 
 The composition root creates the real application:
+
+```ts
+const service = new PlaceOrderService(
+  new PostgresOrderRepository(pool),
+  new PostgresInventoryRepository(pool),
+  new OutboxPublisher(pool),
+);
+```
 
 ```python
 service = PlaceOrderService(
