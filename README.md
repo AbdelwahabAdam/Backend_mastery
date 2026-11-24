@@ -12,6 +12,8 @@ It covers core backend work, databases, operating systems, algorithms, networkin
 4. Complete the module tasks with real code, tests, metrics, and failure scenarios.
 5. Revisit related-topic links whenever a design decision crosses module boundaries.
 
+Code examples are given in both **Node.js/TypeScript** and **Python**. Module 02 has been rewritten to this standard; the other modules are being rewritten one by one. Chapters follow [CHAPTER-GUIDE.md](CHAPTER-GUIDE.md), and `python scripts/check_chapters.py <Module-folder>` checks structure, both languages, duplicated filler and broken links.
+
 ## Recommended study order
 
 1. Core Backend Engineering

@@ -1,194 +1,425 @@
 # Node HTTP Server Concepts
 
----
-
-# ⏱ If You Only Have 2 Minutes
-
-- A Node HTTP server is event-driven, but sockets and buffers still consume finite resources.
-- Always set request, header, and keep-alive timeouts.
-- Backpressure means a producer must slow down when the consumer cannot drain.
-- Graceful shutdown stops new traffic, drains work, then closes resources.
-- In an interview, state the invariant, failure mode, trade-off, and how you would observe it.
+> **Module 02 · Core Backend** · Prerequisites: [HTTP Fundamentals](01-HTTP-Fundamentals.md), [API Design Principles](04-API-Design-Principles.md) · Next: [Node Event Loop and Concurrency](06-Node-Event-Loop-and-Concurrency.md)
 
 ---
 
-# Simple Explanation
+## ⏱ If You Only Have 2 Minutes
 
-Node HTTP Server Concepts exists because backend systems need a predictable way to handle **listeners, streams, keep-alive, backpressure, graceful shutdown, and timeouts**. Think of it as a rulebook: it tells the team what is allowed, what must be protected, and what to do when the normal path fails. The important question is not “can I use this tool?” but “what problem does it prevent in production?”
+- `http.createServer()` gives you a `net.Server` that emits one `request` event per HTTP request. `req` (`IncomingMessage`) is a **readable stream**, `res` (`ServerResponse`) is a **writable stream**. Express and Fastify are just request handlers on top of this.
+- Node does **not** parse or limit request bodies for you. Check `Content-Length` *and* count bytes as they arrive; reply `413 Content Too Large` when over the limit.
+- `res.write()` returning `false` is **backpressure**: stop writing until `drain`. Ignore it and a slow client makes you buffer the whole response in memory. `stream.pipeline()` handles this for you.
+- Three timeouts matter: `headersTimeout` (slowloris guard), `requestTimeout` (whole request must arrive, default 300 s), `keepAliveTimeout` (idle socket, default **5 s**).
+- `keepAliveTimeout` must be **longer** than the load balancer's idle timeout (AWS ALB default: 60 s), or the LB will reuse a socket Node just closed and return random `502`s.
+- Graceful shutdown on `SIGTERM`: fail readiness → wait for the LB to notice → `server.close()` (stops accepting, closes idle keep-alive sockets) → let in-flight requests finish → hard deadline → exit.
+- The same ideas exist in Python: uvicorn's `--timeout-keep-alive` (default 5 s), `--timeout-graceful-shutdown`, and FastAPI's `lifespan` for cleanup. Uvicorn has **no** body-size limit either.
 
 ---
 
-# 1. What is it?
+## 1. What It Is and Why It Exists
 
-Node HTTP Server Concepts is the set of design rules and runtime behavior around listeners, streams, keep-alive, backpressure, graceful shutdown, and timeouts. Its purpose is to keep a request or background operation understandable when traffic grows, clients retry, dependencies slow down, and multiple engineers change the same system.
+A Node HTTP server is a program that listens on a TCP port, parses bytes into HTTP requests, and hands each request to your code. The `node:http` module does the parsing (with the llhttp parser) and connection bookkeeping. Everything above that — routing, JSON parsing, validation — is your code or a framework such as Express or Fastify.
 
-**Why it matters:** interviewers look for engineers who can connect a definition to a concrete invariant. An invariant is a fact that must remain true, such as “one payment is charged once” or “an unauthorized user cannot read another tenant’s data.”
+**Analogy:** a restaurant's front door. The host (the server) seats guests (connections). Each guest can order several times at the same table (keep-alive). The host must decide how long to hold an empty table, how big an order the kitchen will accept, and, at closing time, how to stop seating new guests while letting seated ones finish.
 
-# 2. Why do we need it?
+**The problem it solves.** Knowing the layer under your framework explains bugs that frameworks do not hide:
 
-Without a deliberate approach, the happy path may work while production fails:
+- A client uploads 2 GB of JSON and the process runs out of memory, because nobody set a body limit.
+- A CSV export of one million rows uses 1.5 GB of RAM, because the code wrote faster than the client could read.
+- Random `502 Bad Gateway` errors appear behind a load balancer, because Node closed an idle keep-alive socket at the same moment the LB sent a new request on it.
+- Every deploy drops a few hundred requests, because the process exits on `SIGTERM` without draining.
 
-- A client times out and retries, creating duplicate work.
-- A dependency is slow and exhausts all request workers.
-- A new deployment changes an implicit contract.
-- An incident cannot be explained because logs and metrics lack context.
+**What is Node-specific and what is universal.** Timeouts, body limits, keep-alive tuning, backpressure and graceful shutdown apply to *every* HTTP server — Go, Java, uvicorn, nginx. What is Node-specific is the API (`IncomingMessage`, `drain`, `server.close()`) and the fact that one process runs all handlers on **one thread**, so a slow synchronous handler delays every other request ([next chapter](06-Node-Event-Loop-and-Concurrency.md)).
 
-For Node HTTP Server Concepts, write down the expected outcome, owner, timeout, retry behavior, durable boundary, and measurement before implementation. This is simpler than retrofitting safety after a customer-visible failure.
+---
 
-# 3. How does it work?
+## 2. How It Works
 
-1. **Accept input at a boundary.** Parse and validate untrusted values early.
-2. **Apply policy.** Authenticate, authorize, enforce business rules, and decide whether the work is synchronous.
-3. **Use a bounded dependency.** Set a deadline, size limit, connection limit, or queue limit.
-4. **Make the result durable when needed.** Database constraints and transactions protect state; queues/outboxes protect deferred effects.
-5. **Return or publish a classified outcome.** Callers need stable success, validation, conflict, and retryable-failure semantics.
-6. **Emit evidence.** A request ID, trace ID, duration, outcome, and safe domain identifiers make later diagnosis possible.
+### From TCP socket to handler
+
+1. `server.listen(3000)` opens a listening socket. The OS accepts TCP connections; Node emits `connection` with a `net.Socket`.
+2. The parser reads bytes from the socket. When the request line and headers are complete, Node creates an `IncomingMessage` (headers already parsed) and a `ServerResponse`, then emits `request`.
+3. The **body has not been read yet**. It arrives later as `data` chunks on `req`. If you never read it, it sits in socket buffers.
+4. Your handler calls `res.writeHead()`, `res.write()` and `res.end()`. Node adds `Content-Length` or `Transfer-Encoding: chunked` as needed.
+5. With HTTP/1.1 keep-alive, the socket stays open after `res.end()`. The next request on that socket starts at step 2. If no new request arrives within `keepAliveTimeout`, Node closes the socket.
+
+### Backpressure in one picture
+
+`res.write(chunk)` copies the chunk into an in-memory buffer and returns `true` while that buffer is below its `highWaterMark`. When the client reads slowly, the buffer grows and `write()` returns `false`. The producer must pause until the stream emits `drain`:
+
+```ts
+if (!res.write(row)) await once(res, "drain"); // pause the producer, do not keep pushing
+```
+
+`pipeline(source, res)` from `node:stream/promises` does this automatically. It also destroys the source if the client disconnects, so you do not keep generating rows for nobody.
+
+### Graceful shutdown during a rolling deploy
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant API
-    participant Service
-    participant Store
-    Client->>API: request with deadline
-    API->>Service: validated command
-    Service->>Store: bounded operation
-    Store-->>Service: result or classified failure
-    Service-->>API: stable outcome
-    API-->>Client: response plus trace ID
+    participant K as Kubernetes
+    participant LB as Load balancer
+    participant N as Node process
+    K->>N: SIGTERM (pod is being replaced)
+    N->>N: shuttingDown = true, readiness returns 503
+    N-->>LB: responses now carry "Connection: close"
+    LB->>N: readiness probe fails, stop routing new requests
+    N->>N: after a few seconds, server.close()
+    Note over N: stop accepting, close idle keep-alive sockets
+    N->>N: in-flight requests finish
+    N->>N: close DB pool, flush logs, exit(0)
+    K->>N: SIGKILL only if still alive after terminationGracePeriodSeconds (default 30 s)
 ```
 
-# 4. Internal Workflow
+The delay before `server.close()` exists because Kubernetes sends `SIGTERM` and removes the pod from load-balancer endpoints **at the same time**. For a few seconds, new requests can still arrive. Closing the listener immediately turns them into connection errors. Many teams use a `preStop` hook (`sleep 5`) for the same purpose.
 
-Internally, the key is separating **policy** from **mechanism**. The transport layer should understand HTTP or a queue message. The application layer should understand the use case. The data layer should protect storage invariants. Infrastructure should provide clients, pools, and telemetry.
+---
 
-```mermaid
-flowchart LR
-    Input[Untrusted Input] --> Validate[Validation]
-    Validate --> Policy[Use Case Policy]
-    Policy --> Durable[Transaction or Queue]
-    Durable --> Telemetry[Logs Metrics Traces]
-    Telemetry --> Outcome[Stable Outcome]
+## 3. Key Concepts
+
+### The objects
+
+| Object | Is a | What you do with it |
+|---|---|---|
+| `http.Server` | Subclass of `net.Server` | `listen()`, set timeouts, `close()`, `closeIdleConnections()`, `closeAllConnections()` |
+| `net.Socket` | Duplex stream (one TCP connection) | Rarely touched; carries many requests under keep-alive |
+| `IncomingMessage` (`req`) | Readable stream | Read `method`, `url`, `headers`; consume the body with `for await` |
+| `ServerResponse` (`res`) | Writable stream | `writeHead()`, `write()`, `end()`; check `headersSent` |
+
+Once `res.headersSent` is `true`, the status code is already on the wire. An error in the middle of a streamed response cannot become a `500`; the only honest option is to destroy the socket so the client sees a truncated response.
+
+### Server timeouts
+
+| Setting | Default (Node 22) | Protects against | Typical value |
+|---|---|---|---|
+| `headersTimeout` | min(60 s, `requestTimeout`) | Slowloris: a client sends headers one byte at a time | 10–20 s |
+| `requestTimeout` | 300 s | A client that trickles the body forever | 30–60 s; longer only on upload routes |
+| `keepAliveTimeout` | 5 s | Idle sockets piling up | Load balancer idle timeout + a few seconds |
+| `server.timeout` | 0 (disabled) | Socket inactivity of any kind | Usually left at 0 |
+
+`requestTimeout` covers **receiving** the request, not how long your handler runs. Limiting handler time is your job (deadlines on database and HTTP calls — see [Timeout Pattern](../Module-07-Advanced-Backend-and-System-Design/37-Timeout-Pattern.md)).
+
+### Keep-alive and the load balancer
+
+Both sides of a keep-alive connection can close it when idle. The race:
+
+1. The socket has been idle for 5 s. Node closes it (sends FIN).
+2. At the same instant, the LB picks that socket for a new request.
+3. The LB receives a FIN or RST instead of a response and returns `502` to the user.
+
+The fix: make the **upstream** (Node) wait longer than the **downstream** (LB). With an ALB at 60 s, set `keepAliveTimeout = 65_000`. Then the LB always closes first, and it never sends a request on a socket it is closing. The same rule applies to nginx (`keepalive_timeout` on upstream connections), uvicorn and Gunicorn.
+
+### Body size limits
+
+| Layer | Default limit |
+|---|---|
+| `node:http` | None — you read the stream yourself |
+| `express.json()` | `100kb`, responds `413` |
+| Fastify | `bodyLimit` 1 MiB |
+| uvicorn / Starlette | None for raw bodies |
+| nginx | `client_max_body_size` 1 MB |
+
+Check two things: the declared `Content-Length` (reject before reading a byte) and the **actual** bytes received, because a chunked request has no `Content-Length`. After rejecting a body you did not read, send `Connection: close`; otherwise the unread bytes stay on a socket that will be reused.
+
+### Where Express and Fastify fit
+
+- **Express**: `app` is a function `(req, res, next)`. `app.listen()` is `http.createServer(app).listen()` and returns the `http.Server`, so every timeout above is set on that return value. Express 5 forwards rejected promises from async handlers to the error middleware.
+- **Fastify**: wraps the server (`fastify.server`) and exposes the same settings as options (`bodyLimit`, `keepAliveTimeout`, `requestTimeout`). Its `keepAliveTimeout` default is 72 s, already above a 60 s ALB. `fastify.close()` stops the server and runs `onClose` hooks, which is where pools get closed.
+
+### The Python equivalent: ASGI
+
+In Python the split is explicit. An **ASGI server** (uvicorn, Hypercorn, Granian) owns sockets, HTTP parsing, keep-alive and signals. Your **ASGI app** (FastAPI/Starlette) is an `async def app(scope, receive, send)` callable. `receive()` returns body chunks (`http.request` messages), and `send()` writes the response — the same streaming model as `req`/`res`.
+
+| Concern | Node `node:http` | uvicorn + FastAPI |
+|---|---|---|
+| Idle keep-alive | `server.keepAliveTimeout` (5 s) | `--timeout-keep-alive` (5 s) |
+| Body size | Count bytes yourself | ASGI middleware or reverse proxy |
+| Backpressure | `write()` → `false` → `drain` | `await send(...)` pauses when the transport buffer is full |
+| Graceful shutdown | Your `SIGTERM` handler + `server.close()` | Built in on `SIGTERM`; `--timeout-graceful-shutdown`; cleanup in `lifespan` |
+| Overload | Manual | `--limit-concurrency` returns `503` above N connections/tasks |
+| Multiple cores | `cluster` or several containers | `--workers N` or Gunicorn with uvicorn workers |
+
+---
+
+## 4. Code Examples
+
+Scenario: a JSON endpoint with a body limit, a large CSV export that respects backpressure, timeouts tuned for a load balancer with a 60 s idle timeout, and graceful shutdown on `SIGTERM`.
+
+### Node.js / TypeScript
+
+```ts
+// No runtime packages (npm i -D typescript @types/node) — Node.js 22+, TypeScript 5, ESM
+import http, { type IncomingMessage } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+
+const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  // Reject early on the declared size, before buffering anything.
+  if (Number(req.headers["content-length"] ?? 0) > MAX_BODY_BYTES) throw new HttpError(413, "body_too_large");
+  const chunks: Buffer[] = [];
+  let received = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    received += chunk.length;
+    // Chunked bodies have no Content-Length, and the header can lie: count real bytes.
+    if (received > MAX_BODY_BYTES) throw new HttpError(413, "body_too_large");
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new HttpError(400, "invalid_json"); }
+}
+
+async function* csvRows(): AsyncGenerator<string> {
+  yield "id,name\n";
+  for (let i = 1; i <= 1_000_000; i++) yield `${i},item-${i}\n`;
+}
+
+let shuttingDown = false;
+
+const server = http.createServer(async (req, res) => {
+  // Ask keep-alive clients (and the LB) to open new connections elsewhere while we drain.
+  if (shuttingDown) res.setHeader("connection", "close");
+  try {
+    if (req.method === "POST" && req.url === "/orders") {
+      const body = await readJson(req);
+      res.writeHead(201, { "content-type": "application/json" }).end(JSON.stringify({ received: body }));
+    } else if (req.method === "GET" && req.url === "/export.csv") {
+      res.writeHead(200, { "content-type": "text/csv" });
+      // pipeline waits for 'drain' and destroys the generator if the client disconnects.
+      await pipeline(Readable.from(csvRows()), res);
+    } else if (req.url === "/readyz") {
+      res.writeHead(shuttingDown ? 503 : 200).end();
+    } else {
+      res.writeHead(404).end();
+    }
+  } catch (err) {
+    if (res.headersSent) { res.destroy(); return; } // status already sent; truncate instead of lying
+    const status = err instanceof HttpError ? err.status : 500;
+    if (status === 413) res.setHeader("connection", "close"); // unread body bytes must not be reused
+    const error = err instanceof HttpError ? err.message : "internal_error";
+    res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error }));
+  }
+});
+
+server.headersTimeout = 10_000;   // slowloris guard: all headers within 10 s
+server.requestTimeout = 30_000;   // the full request (headers + body) within 30 s
+server.keepAliveTimeout = 65_000; // longer than the ALB's 60 s idle timeout, so the LB closes first
+server.listen(3000);
 ```
 
-The dangerous part is usually the gap between two steps: a request may be retried after a timeout, a database may commit before a message is published, or a process may stop halfway through cleanup. Design that gap explicitly.
+Graceful shutdown for the same server:
 
-# 5. Important Concepts
+```ts
+const READINESS_GRACE_MS = 5_000; // time for the LB to see /readyz fail
+const HARD_DEADLINE_MS = 20_000;  // must stay below terminationGracePeriodSeconds (30 s default)
 
-## Invariant
-The rule that must stay true. Write it in plain language before selecting a pattern.
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.info({ signal }, "draining");
 
-## Boundary
-The place where input is validated and internal failures become a stable external contract.
+  setTimeout(() => {
+    // Stops accepting connections; since Node 19 it also closes idle keep-alive sockets.
+    server.close((err) => {
+      // Close DB pools, flush logs and metrics here, then exit.
+      process.exit(err ? 1 : 0);
+    });
+    // A stuck request (or a client that never finishes) must not block the deploy forever.
+    setTimeout(() => {
+      server.closeAllConnections();
+      process.exit(1);
+    }, HARD_DEADLINE_MS).unref();
+  }, READINESS_GRACE_MS);
+}
 
-## Idempotency
-Repeating an operation produces the same intended effect. This is essential for retried writes and at-least-once messages.
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
+```
 
-## Time budget
-Every remote call needs a deadline. A timeout is not merely an error setting; it limits resource consumption and controls tail latency.
+Run the container as `CMD ["node", "dist/server.js"]`, not through `npm start` or a shell script that does not forward signals. Otherwise `SIGTERM` never reaches this handler and Kubernetes kills the process after the grace period.
 
-## Observability
-Logs explain events, metrics show trends, and traces show one request path. None replaces the others.
-
-# 6. Real Backend Examples
+### Python
 
 ```python
-from fastapi import HTTPException
+# pip install fastapi uvicorn httpx   — Python 3.12+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-async def perform(command, repository, request_id: str):
-    # The service owns the business outcome, not HTTP serialization.
-    existing = await repository.get_idempotency_result(command.key)
-    if existing:
-        return existing
-    try:
-        return await repository.execute(command, request_id)
-    except TimeoutError as exc:
-        # Translate only at the boundary; callers receive a stable retryable outcome.
-        raise HTTPException(503, "dependency temporarily unavailable") from exc
+import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+MAX_BODY_BYTES = 1024 * 1024
+
+
+class BodySizeLimit:
+    """Pure ASGI middleware. Uvicorn and Starlette do not limit raw body size."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app, self.max_bytes = app, max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = int(dict(scope["headers"]).get(b"content-length", b"0") or 0)
+        if declared > self.max_bytes:
+            response = JSONResponse({"error": "body_too_large"}, 413, headers={"connection": "close"})
+            await response(scope, receive, send)
+            return
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            received += len(message.get("body", b""))
+            if received > self.max_bytes:  # chunked uploads: count what actually arrives
+                raise HTTPException(413, "body_too_large", headers={"connection": "close"})
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.http = httpx.AsyncClient(timeout=5.0)
+    yield
+    # Runs on SIGTERM, after uvicorn stopped accepting and in-flight requests finished
+    # (or --timeout-graceful-shutdown expired). Close pools here, not in a signal handler.
+    await app.state.http.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES)
+
+
+@app.post("/orders", status_code=201)
+async def create_order(order: dict) -> dict:
+    return {"received": order}
+
+
+async def csv_rows() -> AsyncIterator[str]:
+    yield "id,name\n"
+    for i in range(1, 1_000_001):
+        yield f"{i},item-{i}\n"  # each chunk awaits send(), which waits when the socket buffer is full
+
+
+@app.get("/export.csv")
+async def export_csv() -> StreamingResponse:
+    return StreamingResponse(csv_rows(), media_type="text/csv")
 ```
 
-The production concern is not the syntax. The repository must enforce the relevant unique constraint or transaction rule, and the caller must have a bounded retry policy. Add structured logs with `request_id`, outcome, duration, and safe IDs; never include credentials or full sensitive payloads.
+Run it with settings that mirror the Node example:
 
-| Choice | Good when | Main risk |
-|---|---|---|
-| Synchronous work | Caller needs an immediate answer | Cascading latency and coupling |
-| Queue/worker | Work is slow or retryable | Duplicate delivery and delayed result |
-| Process-local state | One process owns the state | Breaks across replicas/restarts |
-| Durable store | Cross-process correctness matters | Latency and operational cost |
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4 \
+  --timeout-keep-alive 65 \
+  --timeout-graceful-shutdown 20 \
+  --limit-concurrency 1000
+```
 
-# 7. Common Mistakes
+**Runtime differences to notice:**
 
-- **Treating framework defaults as policy.** Defaults rarely match your timeout, auth, or error-contract needs.
-- **Retrying every exception.** Validation, conflicts, and non-idempotent effects should not be blindly retried.
-- **Holding a transaction while calling another service.** It increases lock duration and creates deadlock/latency risk.
-- **Logging a secret to help debugging.** Secrets spread faster than incidents end.
-- **Measuring only averages.** Queueing and slow dependencies show up in p95/p99 first.
+- In Node *you* write the `SIGTERM` handler. Uvicorn handles `SIGTERM` itself: it closes the listening socket at once, waits for in-flight requests, then runs the `lifespan` shutdown code. Because it stops listening immediately, the "fail readiness first" delay must come from a Kubernetes `preStop` hook.
+- `--workers 4` starts four processes, each with its own event loop. A single Node process uses one core for JavaScript; you scale it with more containers or `cluster`.
+- `HTTPException` raised inside `receive()` is turned into a `413` by Starlette's exception middleware, because the route is still reading its body when it happens.
 
-# 8. Comparison Table
+---
 
-| Question | Weak answer | Strong answer |
-|---|---|---|
-| “How does it work?” | Names a library or pattern | Explains flow, invariant, and failure boundaries |
-| “How does it scale?” | “Add servers” | Describes state ownership, limits, backpressure, and hot keys |
-| “How do you retry?” | “Retry three times” | Classifies errors, checks idempotency, uses deadlines and jitter |
-| “How do you debug?” | “Read logs” | Correlates logs, metrics, traces, deploy changes, and dependency timing |
+## 5. Production Concerns
 
-# 9. Things I Must Remember
+- **Load balancer `502` / `504` patterns.** A steady trickle of `502`s that does not follow traffic or deploys is usually the keep-alive race. Compare the LB idle timeout with `keepAliveTimeout` (Node), `--timeout-keep-alive` (uvicorn) or `keepalive_timeout` (nginx) before anything else.
+- **Memory under slow clients.** Watch RSS while a slow client (`curl --limit-rate 10k`) downloads a large export. If memory climbs with the response size, something ignores backpressure — often `res.write()` in a loop, or building the whole body as a string.
+- **Body limits per route.** Keep a small default (100 KB–1 MB) and raise it only on upload routes. Better still, send large files directly to object storage with pre-signed URLs, so they never pass through the API process.
+- **Slowloris and connection exhaustion.** `headersTimeout` and `requestTimeout` are the in-process defence. A reverse proxy (nginx, an ALB) in front buffers slow clients so the app only sees complete requests.
+- **Deploy-time errors.** Measure `5xx` and connection resets during a rolling deploy. If they spike, check the order: readiness fails → delay → `server.close()` → hard deadline below `terminationGracePeriodSeconds`. Also check that the process actually receives `SIGTERM` (PID 1, no `npm start` wrapper).
+- **Long-lived connections.** WebSockets and SSE streams never become idle, so `server.close()` waits for them forever. Track them and close them explicitly during shutdown, ideally with a "reconnect" message.
+- **What to measure:** open connections, requests in flight, `413`/`408` counts, response bytes per second, and the time from `SIGTERM` to exit.
 
-- A Node HTTP server is event-driven, but sockets and buffers still consume finite resources.
-- Always set request, header, and keep-alive timeouts.
-- Backpressure means a producer must slow down when the consumer cannot drain.
-- Graceful shutdown stops new traffic, drains work, then closes resources.
-- Design the unhappy path before the happy path becomes public.
-- Keep resource use bounded: time, memory, connections, queue depth, and retries.
-- Make security checks explicit at the boundary and authorization specific to the resource.
-- Prefer a database constraint over a race-prone application check for shared durable data.
-- Use stable machine-readable errors; keep diagnostic detail inside the service.
-- Test timeout, retry, restart, duplicate, and concurrent paths.
-- Deploy compatible changes progressively and keep rollback practical.
-- Document the owner, SLO, alert, and runbook for important behavior.
+---
 
-# 10. Interview Questions
+## 6. Common Mistakes
 
-**Q: What problem does Node HTTP Server Concepts solve?**  
-It protects a stated invariant around listeners, streams, keep-alive, backpressure, graceful shutdown, and timeouts, especially when requests overlap, retry, or fail partially.
+- **Leaving `keepAliveTimeout` at 5 s behind a 60 s load balancer** — intermittent `502`s that are very hard to reproduce — set it a few seconds above the LB idle timeout.
+- **Reading the whole body with no limit** — one large or endless request exhausts memory — enforce `Content-Length` and a byte counter, return `413`, and add a proxy limit too.
+- **Calling `res.write()` in a loop and ignoring the return value** — memory grows with response size for slow clients — use `pipeline()` or wait for `drain`.
+- **`process.exit()` straight from the `SIGTERM` handler** — in-flight requests are cut off and clients see resets on every deploy — fail readiness, `server.close()`, drain, then exit.
+- **No hard deadline on shutdown** — one hung request or open WebSocket keeps the pod alive until `SIGKILL` — `closeAllConnections()` after a deadline shorter than the grace period.
+- **Trying to send a `500` after headers were sent** — Node throws `ERR_HTTP_HEADERS_SENT` and the client gets a half-written body that looks complete — check `res.headersSent` and destroy the socket instead.
+- **Assuming FastAPI or uvicorn limits upload size** — a 5 GB POST is accepted and buffered by `await request.body()` — add a size middleware or a proxy `client_max_body_size`.
 
-**Q: What would you monitor?**  
-Traffic, errors by class, p50/p95/p99 latency, saturation, dependency timing, queue age where applicable, and a business outcome tied to the invariant.
+---
 
-**Q: What is the senior-level trade-off?**  
-Choose the minimum coordination and abstraction that preserves correctness. Stronger consistency, global availability, and more layers all cost latency, complexity, or operational work.
+## 7. Comparison Table
 
-# 11. Cheat Sheet
+| | `node:http` | Express 5 | Fastify | uvicorn + FastAPI |
+|---|---|---|---|---|
+| Routing | Manual | Middleware chain | Radix-tree router | Decorators + Starlette router |
+| Body parsing / limit | Manual / none | `express.json()` / 100 KB | Built in / 1 MiB | Pydantic models / none by default |
+| Async errors | Your `try/catch` | Rejected promises go to error middleware | Built in | Exception handlers |
+| Default keep-alive | 5 s | 5 s (same server) | 72 s | 5 s |
+| Graceful shutdown | Write it yourself | Write it yourself (`app.listen()` returns the server) | `fastify.close()` + `onClose` hooks | Built in on `SIGTERM` + `lifespan` |
+| Use when | Proxies, tiny services, learning | Large ecosystem, familiar to most teams | Throughput, schema validation | Python services, typed request models |
 
-- State the invariant first.
-- Validate untrusted input at the boundary.
-- Authenticate identity; authorize the action.
-- Propagate deadlines.
-- Bound retries and add jitter.
-- Make retried writes idempotent.
-- Use durable constraints for durable invariants.
-- Keep transactions short.
-- Separate request latency from background work.
-- Measure tail latency and saturation.
-- Use structured, redacted logs.
-- Propagate trace context.
-- Avoid high-cardinality metric labels.
-- Test failure paths.
-- Deploy progressively.
-- Keep rollback and recovery documented.
+---
 
-## Deep Interview Drill
+## 8. Interview Questions
 
-Before an interview, rehearse this topic with one realistic story. Start with the user action and name the invariant. Draw the request path and mark where input becomes trusted, where a timeout applies, and where the state becomes durable. Then introduce a failure: the client retries, a dependency is slow, a worker restarts, or two requests overlap. Explain what prevents corruption and what the user sees while recovery happens.
+**[Junior] What are `req` and `res` in a Node HTTP handler?**
+`req` is an `IncomingMessage`, a readable stream with the method, URL and already-parsed headers; the body still has to be read from the stream. `res` is a `ServerResponse`, a writable stream used to send the status, headers and body. Frameworks wrap these objects but do not replace them, so stream rules such as backpressure still apply in Express and Fastify.
 
-Next, challenge the first design. Ask whether a database constraint is safer than an application check, whether a queue is better than a synchronous dependency, and whether extra abstraction makes the policy clearer or merely hides it. Finish with evidence: the integration test that protects the bug, the metric that detects impact, the trace that identifies the slow hop, and the runbook action that restores service. This pattern turns a definition into a senior-level answer. Name the bound, the owner, the failure class, the observable signal, and the recovery decision; those details make an answer concrete and credible.
+**[Junior] Why does a server need a request body size limit?**
+Without one, a single client can send an arbitrarily large or never-ending body and the server buffers it into memory until the process crashes. Check `Content-Length` before reading, count actual bytes for chunked bodies, and return `413`. Keep a small default and raise it only on routes that accept uploads.
+
+**[Mid] What is backpressure and how do you handle it when streaming a response?**
+Backpressure is the signal that the consumer (a slow client) is not keeping up. In Node, `res.write()` returns `false` once its buffer passes the `highWaterMark`, and the producer should pause until `drain`. `stream.pipeline()` does this automatically and destroys the source when the client disconnects. In ASGI, `await send()` gives the same effect by suspending the coroutine until the transport can take more data.
+
+**[Mid] Your service behind an AWS ALB returns occasional `502`s with no errors in the app logs. What do you check?**
+The keep-alive timeout race. Node's default `keepAliveTimeout` is 5 s and the ALB idle timeout is 60 s, so Node closes idle sockets that the ALB still thinks are reusable. When the ALB sends a request on such a socket, it gets a reset and returns `502` without the app ever seeing the request. Set `keepAliveTimeout` above the LB idle timeout (for example 65 s).
+
+**[Mid] What do `headersTimeout` and `requestTimeout` protect against?**
+`headersTimeout` limits how long the client may take to send the complete headers, which stops slowloris attacks that hold sockets open by sending one header byte at a time. `requestTimeout` limits the time to receive the entire request, including the body. Neither limits how long your handler runs; that needs deadlines on downstream calls.
+
+**[Senior] Walk through a graceful shutdown of a Node API in Kubernetes.**
+On `SIGTERM`, mark the instance as shutting down so the readiness probe returns `503` and responses carry `Connection: close`. Wait a few seconds, because endpoint removal happens in parallel with the signal and new requests may still arrive. Then call `server.close()` to stop accepting and close idle keep-alive sockets, let in-flight requests finish, close pools and flush telemetry, and exit. A hard deadline below `terminationGracePeriodSeconds` calls `closeAllConnections()` so a stuck request cannot block the rollout.
+
+**[Senior] Which of these concepts are Node-specific, and how does a Python ASGI stack handle them?**
+Timeouts, keep-alive tuning, body limits, backpressure and draining are universal HTTP-server concerns. Node-specific are the APIs and the single-threaded model: one process runs every handler on one thread, so you write the shutdown handler yourself and scale with more processes. In Python, uvicorn owns the socket layer: it has `--timeout-keep-alive`, handles `SIGTERM` and drains requests itself, and runs `lifespan` shutdown code at the end. It has no body-size limit, so you add an ASGI middleware or rely on the proxy.
+
+**[Senior] A CSV export endpoint makes pods run out of memory only for some customers. How do you investigate?**
+Suspect backpressure first: large customers have big exports, and slow or distant clients read slowly, so any code that ignores `write()`'s return value buffers the whole file. Reproduce with a rate-limited client and watch RSS. The fix is to stream from a database cursor through `pipeline()` (or an async generator in `StreamingResponse`) so memory stays flat. If the export is very large, move it to a background job that writes to object storage and return a download link.
+
+---
+
+## 9. Cheat Sheet
+
+```text
+Objects        Server (net.Server) · Socket · req = Readable · res = Writable
+Body           Node/uvicorn: no limit by default · express.json 100kb · Fastify 1 MiB · reply 413
+Limit check    Content-Length first, then count bytes (chunked) · Connection: close after rejecting
+Backpressure   write() === false → wait 'drain' · prefer pipeline() · ASGI: await send()
+Timeouts       headersTimeout 10–20 s · requestTimeout 30–60 s (default 300 s) · keepAliveTimeout default 5 s
+Keep-alive     app idle timeout > LB idle timeout (ALB 60 s → 65 s) or random 502s
+Shutdown       SIGTERM → readiness 503 → wait ~5 s → server.close() → drain → close pools → exit
+Deadline       closeAllConnections() before terminationGracePeriodSeconds (30 s default)
+Signals        CMD ["node", "server.js"] — not npm start
+Headers sent   cannot change status; destroy the socket on mid-stream errors
+Express        app.listen() returns http.Server → set timeouts on it
+uvicorn        --timeout-keep-alive · --timeout-graceful-shutdown · --limit-concurrency · lifespan cleanup
+```
+
+---
 
 ## Related Topics
 
-Study these next:
-
-- [API Design Principles](04-API-Design-Principles.md)
-- [Node Event Loop and Concurrency](06-Node-Event-Loop-and-Concurrency.md)
-- [REST APIs](02-REST-APIs.md)
-- [HTTP Status Codes](03-HTTP-Status-Codes.md)
+- [Node Event Loop and Concurrency](06-Node-Event-Loop-and-Concurrency.md) — why one slow handler delays every request in the process
+- [Load Balancers](../Module-06-Networking-and-Distributed-Basics/24-Load-Balancers.md) — idle timeouts, health checks and connection draining on the other side
+- [HTTP over TCP](../Module-06-Networking-and-Distributed-Basics/11-HTTP-over-TCP.md) — keep-alive connections and what a socket reset looks like
+- [Signals](../Module-04-Operating-Systems/29-Signals.md) — `SIGTERM`, `SIGKILL` and PID 1 behaviour
+- [Timeout Pattern](../Module-07-Advanced-Backend-and-System-Design/37-Timeout-Pattern.md) — deadlines for the work inside a handler
