@@ -222,7 +222,9 @@ function requireScope(scope: string) {
 const app = express();
 
 app.get("/orders/:id", requireScope("orders:read"), async (req, res) => {
-  const order = await ordersRepo.findById(req.params.id);
+  // Express 5 types route params as string | string[] (wildcards can repeat), so narrow first.
+  const orderId = String(req.params.id);
+  const order = await ordersRepo.findById(orderId);
   // The token proves identity, not ownership. Use 404 so callers cannot probe for other users' IDs.
   if (!order || order.ownerId !== req.user!.sub) {
     res.status(404).json({ error: "not_found" });

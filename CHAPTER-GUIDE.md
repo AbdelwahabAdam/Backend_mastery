@@ -66,6 +66,14 @@ At least two must be Senior-level (trade-offs, failure scenarios, design decisio
 - **Type-safe TypeScript.** In Express handlers, write `res.status(…).json(…); return;` rather than `return res.json(…)`.
 - If a topic is runtime-specific (e.g. the Node event loop), the Python section shows the equivalent mechanism (e.g. asyncio / ASGI) and says how it differs.
 
+## Database chapters (Module 03 and later)
+
+- **SQL is a third language.** In section 4, put `### SQL` first when the topic is about SQL itself, then `### Node.js / TypeScript`, then `### Python`. The TS and Python blocks show how application code *uses* the topic: parameterized queries, transactions, retries, mapping results. They don't just wrap the same SQL string.
+- **Dialect:** PostgreSQL 16+. Add a short "MySQL (InnoDB) difference" note when interviewers commonly ask about it (e.g. default isolation level, gap locks, `ON DUPLICATE KEY UPDATE`).
+- **Drivers:** Node: `pg` (node-postgres), Prisma or Drizzle only in ORM/migration chapters, the official `mongodb` driver. Python: psycopg 3 or asyncpg, SQLAlchemy 2.0 in ORM chapters, Alembic for migrations, PyMongo for MongoDB.
+- **Shared schema:** use the sample schema in `Module-03-Databases/README.md` (customers, products, inventory, orders, order_items, payments). Add tables or indexes in the chapter when needed, and show their DDL.
+- **Plans and output:** show `EXPLAIN (ANALYZE, BUFFERS)` output or query results when they teach something. Label them "illustrative output" and keep them realistic: node types, row estimates and timings must be consistent with each other.
+
 ## Accuracy rules
 
 - Prefer primary sources: RFCs (e.g. RFC 9110 HTTP semantics, RFC 6265 cookies, RFC 7519 JWT, RFC 9457 problem details), OWASP cheat sheets, official library docs.

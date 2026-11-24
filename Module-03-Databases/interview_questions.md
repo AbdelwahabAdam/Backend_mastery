@@ -1,1427 +1,284 @@
-# Interview Questions
+# Module 03 Interview Questions
 
-Use these to practice structured reasoning. A strong answer states the invariant, assumptions, alternatives, failure modes, telemetry, and a rollout plan.
+Each chapter ends with questions about its own topic. The questions here **cut across chapters**, the way database interviews really go: a design question turns into an indexing question, then a concurrency question.
 
-## Junior
+**How to answer:** direct answer first, then the mechanism, then a trade-off or failure case. For Senior questions, end with how you would detect the problem in production (a query, a metric, a log line).
 
-### 1. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **02 CAP Theorem**.
+Levels: **[Junior]** definitions and basic SQL · **[Mid]** trade-offs and debugging · **[Senior]** design under load and failure.
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 02 CAP Theorem, state assumptions, and name the signal that would prove success.
+All examples use the [sample schema](README.md#sample-schema-used-in-every-chapter).
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+---
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+## A. Choosing and modelling
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 1. [Junior] When would you pick MongoDB over PostgreSQL?
+*Chapters: [01](01-SQL-vs-NoSQL.md), [04](04-Database-Selection.md), [36](36-Document-Modeling.md)*
 
-**Difficulty**  
-Foundational
+When the data is naturally a self-contained document that you read and write as a whole: a product catalogue with very different attributes per category, event payloads, or content. When the access patterns are known and few, so that single-document atomicity covers your invariants. Or when you need built-in horizontal sharding early. Pick PostgreSQL when there are many relationships, ad-hoc queries and reporting, or invariants across several entities (money, stock). PostgreSQL also covers many "document" needs with `jsonb` and GIN indexes, which is why "start with Postgres" is a reasonable default.
 
+### 2. [Mid] What does the CAP theorem actually say, and where does a single-primary PostgreSQL sit?
+*Chapters: [02](02-CAP-Theorem.md), [03](03-Consistency-Models.md)*
 
-### 2. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **04 Database Selection**.
+During a network **partition**, a replicated system must choose between consistency (every read sees the latest write: linearizability) and availability (every non-failing node answers). Partitions aren't optional, so "CA" isn't a real choice for a distributed system. A single-primary Postgres with failover behaves as **CP** for writes: clients cut off from the primary cannot write. Reads from asynchronous replicas are not linearizable, because they can be stale. PACELC adds the everyday trade-off: even without a partition, you choose between latency and consistency (e.g. synchronous replication costs a round trip on every commit).
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 04 Database Selection, state assumptions, and name the signal that would prove success.
+### 3. [Mid] A user updates their profile, refreshes, and sees the old value. What happened?
+*Chapters: [03](03-Consistency-Models.md), [02](02-CAP-Theorem.md)*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+The read went to an asynchronous replica that had not yet replayed the write, which breaks **read-your-writes** consistency. Fixes:
+- Route that user's reads to the primary for a short window after a write.
+- Better: record the commit's WAL position (`pg_current_wal_lsn()`), and read from a replica only if `pg_last_wal_replay_lsn()` has passed it.
+- In MongoDB, use causally consistent sessions.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+Detect it by monitoring replica lag in bytes and seconds, and alerting when it exceeds what the product tolerates.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 4. [Mid] Should `order_items` store `unit_price_cents` when `products` already has the price? Isn't that denormalization?
+*Chapters: [06](06-Normalization.md), [07](07-Denormalization.md)*
 
-**Difficulty**  
-Foundational
+Store it. It is not redundant: it records the price **at purchase time**, which is a different fact from the product's current price. Reading it from `products` would silently change old invoices whenever the price changes. Denormalization means copying a fact that is defined elsewhere, such as the product *name*, and then having to keep the copies in sync. The test is: if the source changes, should this value change too? If no, it's a separate fact.
 
+### 5. [Mid] `bigint` identity, UUIDv4 or UUIDv7 for primary keys?
+*Chapter: [05](05-Schema-Design.md)*
 
-### 3. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **06 Normalization**.
+- **`bigint` identity** is small (8 bytes) and fast, and inserts are sequential, so they append to the right edge of the B-tree. But IDs are guessable, and they must be generated by the database.
+- **UUIDv4** can be generated anywhere and isn't guessable. But it is random, so inserts land all over the index, causing page splits, cache misses and write amplification on large tables.
+- **UUIDv7** is time-ordered: you can generate it anywhere, like v4, and it inserts sequentially, like bigint.
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 06 Normalization, state assumptions, and name the signal that would prove success.
+A common choice: bigint internally, with a UUIDv7 (or another opaque ID) in public APIs. PostgreSQL 18 includes a built-in `uuidv7()`.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+### 6. [Senior] Design the schema for a product-review feature that must show the average rating on every product page.
+*Chapters: [05](05-Schema-Design.md), [07](07-Denormalization.md), [17](17-Materialized-Views.md)*
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+- **Source of truth:** a `reviews` table with `UNIQUE (customer_id, product_id)` and `CHECK (rating BETWEEN 1 AND 5)`, so the database enforces the rules.
+- **The read problem:** computing `AVG` on every page view is wasteful at 1000:1 read/write. There are three options:
+  1. `rating_sum` / `rating_count` columns on `products`, updated in the same transaction as the review insert. Always correct, but a viral product becomes a hot row.
+  2. A materialized view refreshed every few minutes. Cheap writes, stale reads.
+  3. A cache.
+- **Choice:** option 1 for correctness, with a nightly drift check comparing the counters with `COUNT(*)`. Mention the hot-row mitigation: batch the increments, or shard the counter.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+---
 
-**Difficulty**  
-Foundational
+## B. Writing queries
 
+### 7. [Junior] What is the difference between `WHERE` and `HAVING`?
+*Chapter: [13](13-Aggregate-Functions.md)*
 
-### 4. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **08 SQL DDL**.
+`WHERE` filters rows **before** grouping, so it cannot use aggregates. `HAVING` filters groups **after** aggregation. Put every condition that doesn't need an aggregate in `WHERE`: it reduces the rows before the expensive grouping and can use indexes. `HAVING SUM(total_cents) > 100000` is right; `HAVING status = 'paid'` works, but it is a `WHERE` condition in the wrong place.
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 08 SQL DDL, state assumptions, and name the signal that would prove success.
+### 8. [Mid] Why can a `LEFT JOIN` silently behave like an `INNER JOIN`?
+*Chapter: [10](10-SQL-JOINs.md)*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+Because a condition on the right-hand table was put in `WHERE`. For customers without orders, `o.status` is NULL, and `WHERE o.status = 'paid'` removes those rows, so the outer join is undone. Put conditions on the optional table in the `ON` clause: `LEFT JOIN orders o ON o.customer_id = c.id AND o.status = 'paid'`. Use `count(o.id)`, not `count(*)`, so customers with no orders count 0, not 1.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+### 9. [Mid] `NOT IN` returned no rows, but there are clearly matches. Why?
+*Chapter: [12](12-EXISTS-vs-IN.md)*
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+The subquery returned at least one `NULL`. `x NOT IN (1, 2, NULL)` evaluates to `x <> 1 AND x <> 2 AND x <> NULL`, and the last comparison is unknown, so no row passes. `NOT EXISTS` doesn't have this problem, and PostgreSQL plans it as an anti-join, while `NOT IN (subquery)` cannot be planned that way. Rule: use `NOT EXISTS` for anti-joins. Use `IN` / `= ANY($1)` for lists you control.
 
-**Difficulty**  
-Foundational
+### 10. [Mid] Find each customer's three most recent orders. Give two approaches.
+*Chapters: [11](11-Subqueries.md), [14](14-Window-Functions.md), [20](20-Composite-Indexes.md)*
 
+1. **Window function:** `row_number() OVER (PARTITION BY customer_id ORDER BY created_at DESC, id DESC)` in a subquery, then `WHERE rn <= 3`. Simple, but it may rank every order of every customer.
+2. **`LATERAL`:** for each customer, `SELECT ... WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 3`. With an index on `(customer_id, created_at DESC, id DESC)`, each lookup reads just three index entries.
 
-### 5. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **10 SQL JOINs**.
+The LATERAL version wins when you need a few customers or there are many orders per customer. The window version is fine for whole-table batch jobs. Always add `id` as a tie-breaker.
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 10 SQL JOINs, state assumptions, and name the signal that would prove success.
+### 11. [Mid] What does a window function give you that `GROUP BY` doesn't?
+*Chapter: [14](14-Window-Functions.md)*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+It computes over related rows **without collapsing them**. Every order keeps its row and gains a column such as running spend (`SUM(...) OVER (PARTITION BY customer_id ORDER BY created_at)`), rank, or the previous order's date (`lag`). Watch the default frame: with `ORDER BY`, the frame ends at the current row, so `last_value()` returns the current row unless you specify `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+### 12. [Mid] How do you insert-or-update safely under concurrency?
+*Chapter: [09](09-SQL-DML.md)*
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+Use `INSERT ... ON CONFLICT (key) DO UPDATE SET ... = EXCLUDED....`. It is atomic against a unique index, so two concurrent upserts cannot both insert. "SELECT, then INSERT if missing" is a race: both sessions see nothing, both insert, and one fails, or you get duplicates if there's no unique constraint. Add a `WHERE` on the `DO UPDATE` to make it forward-only, e.g. never move a payment from `captured` back to `authorized` when webhooks arrive out of order. MySQL's equivalent is `ON DUPLICATE KEY UPDATE`.
 
-**Difficulty**  
-Foundational
+---
 
+## C. Performance
 
-### 6. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **12 EXISTS vs IN**.
+### 13. [Junior] Why not index every column?
+*Chapter: [19](19-Indexes.md)*
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 12 EXISTS vs IN, state assumptions, and name the signal that would prove success.
+Every index must be updated on each `INSERT`, on each `DELETE`, and on each `UPDATE` that touches its columns. That slows writes, uses disk and memory, and adds vacuum work. Indexes on low-selectivity columns (e.g. a boolean) are rarely used. Add indexes for real query patterns, and remove those with `idx_scan = 0` in `pg_stat_user_indexes` (checking replicas too). Don't forget that PostgreSQL does **not** index foreign-key columns automatically.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+### 14. [Mid] Which index serves `WHERE customer_id = $1 AND status = 'paid' ORDER BY created_at DESC LIMIT 20`?
+*Chapters: [20](20-Composite-Indexes.md), [21](21-Covering-Indexes.md)*
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+`(customer_id, status, created_at DESC)`: the equality columns first, then the sort column. The database jumps to the matching range and reads the first 20 entries already in order, with no sort and no scan of other customers' rows. Putting `created_at` before `status` would break the "no sort" property. To avoid heap fetches, add `INCLUDE (total_cents)` for an index-only scan. That only pays off if the table is vacuumed often enough for the visibility map to stay current.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 15. [Mid] How do you read `EXPLAIN ANALYZE`? What is the first thing you look for?
+*Chapter: [22](22-Query-Execution-Plans.md)*
 
-**Difficulty**  
-Foundational
+Read the tree from the innermost node outward. For each node, compare **estimated rows with actual rows**. A big mismatch (e.g. 10 estimated, 200,000 actual) means the planner chose a strategy for the wrong data size, usually because of stale statistics (`ANALYZE`) or correlated columns (extended statistics). Then look for time hot spots, multiplying by `loops`, and for `Rows Removed by Filter`, sorts spilling to disk, and buffer reads with `BUFFERS`. Remember that `EXPLAIN ANALYZE` actually **runs** the query, so wrap writes in `BEGIN … ROLLBACK`.
 
+### 16. [Senior] The database CPU is at 90% and the API is slow. Walk through your investigation.
+*Chapters: [23](23-Query-Optimization.md), [22](22-Query-Execution-Plans.md), [26](26-Query-Anti-Patterns.md)*
 
-### 7. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **14 Window Functions**.
+1. In `pg_stat_statements`, sort by **total** execution time, not mean. The culprit is often a 2 ms query called 50,000 times a minute: an N+1 query or a missing cache.
+2. Check `pg_stat_activity` for long-running or blocked queries.
+3. Reproduce the top query with realistic parameters and read `EXPLAIN (ANALYZE, BUFFERS)`.
+4. Fix one thing: an index, a rewrite (e.g. a function on an indexed column), batching N+1 into `= ANY($1)`, or fresh statistics.
+5. Verify in `pg_stat_statements` that the fix worked.
+6. Add a guard (a plan test or a query-count test).
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 14 Window Functions, state assumptions, and name the signal that would prove success.
+Also check whether a recent deploy or migration changed a query or dropped an index.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+### 17. [Mid] Why does `OFFSET 100000` get slow, and what do you use instead?
+*Chapters: [24](24-Offset-Pagination.md), [25](25-Cursor-Pagination.md)*
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+The database must produce and discard all 100,000 preceding rows. Cost grows with depth, and rows shift between page requests when data is inserted. Keyset (cursor) pagination continues after the last row seen: `WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC LIMIT 20`. With a matching index, every page costs the same. The trade-off: no "jump to page 500", and the cursor must include a unique tie-breaker. Encode it opaquely, and sign it if you need to stop tampering.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 18. [Mid] Name three query anti-patterns and their fixes.
+*Chapter: [26](26-Query-Anti-Patterns.md)*
 
-**Difficulty**  
-Foundational
+- **N+1:** loading 50 orders, then querying items for each one. Fix: one batched query with `= ANY($1)`, or ORM eager loading.
+- **A function on an indexed column:** `WHERE date(created_at) = $1` can't use the index. Fix: a half-open range, `created_at >= $1 AND created_at < $1 + interval '1 day'`.
+- **A leading wildcard:** `LIKE '%phone%'` can't use a B-tree. Fix: a `pg_trgm` GIN index, or full-text search.
 
+Others worth knowing: `SELECT *` in hot paths, `ORDER BY random()`, unbounded queries without `LIMIT`, and long idle-in-transaction sessions.
 
-### 8. Explain the request path from a client to a persisted result.
-**Question**  
-Apply your answer to **16 Views**.
+### 19. [Senior] When would you use a materialized view instead of a cache or a summary table?
+*Chapters: [17](17-Materialized-Views.md), [07](07-Denormalization.md)*
 
-**Expected Answer**  
-Describe validation, service logic, persistence, response mapping, and basic failure handling. Connect it to the invariant of 16 Views, state assumptions, and name the signal that would prove success.
+A materialized view suits an expensive aggregate that tolerates minutes of staleness and is defined entirely by SQL, such as a dashboard of daily sales by category. `REFRESH ... CONCURRENTLY` (which needs a unique index) keeps it readable during refresh, but every refresh recomputes everything. Use an incrementally maintained summary table when it must be fresher, or the base data is huge and a full recompute is too costly. Use an application cache for per-key lookups with explicit invalidation. Always prevent overlapping refreshes (e.g. with an advisory lock), and expose "last refreshed at" so staleness is visible.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+---
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+## D. Correctness under concurrency
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 20. [Junior] What does each letter of ACID guarantee, and what doesn't it guarantee?
+*Chapter: [28](28-ACID.md)*
 
-**Difficulty**  
-Foundational
+- **Atomicity:** all statements in the transaction commit, or none do.
+- **Consistency:** the constraints you declared hold at commit. It does not know business rules you never declared, and it is a different "C" from CAP's.
+- **Isolation:** concurrent transactions don't see each other's partial work, to the degree the isolation level promises.
+- **Durability:** once committed, the change survives a crash, because the WAL was flushed.
 
+What ACID doesn't guarantee: protection from anomalies your isolation level allows, or survival of a committed write on a primary that dies before replicating it to a replica that gets promoted.
 
-## Mid
+### 21. [Mid] Your Node service uses `pool.query('BEGIN')`, then `pool.query('UPDATE ...')`, then `pool.query('COMMIT')`. What's wrong?
+*Chapter: [27](27-Transactions.md)*
 
-### 9. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **10 SQL JOINs**.
+Each `pool.query` may run on a **different connection**. `BEGIN` opens a transaction on connection A, the `UPDATE` runs in autocommit on connection B, and `COMMIT` hits connection C with nothing to commit. Connection A goes back to the pool still inside an open transaction, and the next user of that connection inherits it. The fix is to check out one client (`const client = await pool.connect()`), run everything on it, and in `finally` call `client.release()`, after a `ROLLBACK` on error. In Python, psycopg's `async with conn.transaction():` ties the transaction to one connection.
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 10 SQL JOINs, state assumptions, and name the signal that would prove success.
+### 22. [Mid] Two requests buy the last item at the same time, and both succeed. Give three fixes.
+*Chapters: [32](32-Optimistic-vs-Pessimistic-Locking.md), [30](30-Database-Locks.md), [09](09-SQL-DML.md)*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+This is a lost update from read-check-write.
+1. **An atomic conditional update:** `UPDATE inventory SET available = available - 1 WHERE product_id = $1 AND available >= 1`. 0 rows updated means sold out. It is the simplest and fastest.
+2. **Pessimistic:** `SELECT ... FOR UPDATE` inside a transaction, then check and update. The second buyer waits.
+3. **Optimistic:** `UPDATE ... SET available = $new, version = version + 1 WHERE product_id = $1 AND version = $read_version`. 0 rows means someone else changed it, so retry or return 409.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+Choose 1 when the logic fits in one statement, 2 for high contention or complex critical sections, and 3 for low contention and long user think-time (e.g. edit forms).
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 23. [Mid] What anomaly does PostgreSQL's `REPEATABLE READ` still allow?
+*Chapter: [29](29-Isolation-Levels.md)*
 
-**Difficulty**  
-Intermediate
+**Write skew.** Two transactions read overlapping data, each makes a decision based on what it read, and each writes a *different* row. Example: two on-call doctors each see that "the other is still on call" and both go off call. Snapshot isolation sees no conflict, because they updated different rows. Fixes:
+- `SERIALIZABLE`, which uses SSI to detect the dangerous pattern and fails one transaction with `40001`, so you must retry
+- locking the rows you based the decision on (`SELECT ... FOR UPDATE`)
+- turning the rule into a constraint
 
+Also note: PostgreSQL's REPEATABLE READ **does** prevent phantoms, unlike the SQL standard's minimum. MySQL's REPEATABLE READ behaves differently, because it uses locking reads and gap locks.
 
-### 10. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **12 EXISTS vs IN**.
+### 24. [Senior] You see `deadlock detected` errors a few times an hour. How do you diagnose and fix them?
+*Chapters: [31](31-Deadlocks.md), [30](30-Database-Locks.md)*
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 12 EXISTS vs IN, state assumptions, and name the signal that would prove success.
+1. Read the PostgreSQL log entry. It lists each process, the lock it waited for, and the query.
+2. Map the queries to code paths. The usual cause is two paths locking the same rows in **different orders**, e.g. a multi-item checkout locking products in cart order, or a batch update without `ORDER BY`.
+3. Fix by locking in a consistent order (`SELECT ... WHERE id = ANY($1) ORDER BY id FOR UPDATE` before updating, or sorting keys before batch writes), and by keeping transactions short.
+4. Since the database aborts one transaction with `40P01`, retry the **whole** transaction with jittered backoff.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+A low steady rate with retries can be acceptable. A rising rate means contention is growing.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+### 25. [Senior] An `ALTER TABLE` took the site down even though it "only adds a column". How?
+*Chapters: [08](08-SQL-DDL.md), [30](30-Database-Locks.md), [34](34-Database-Migrations.md)*
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+Most `ALTER TABLE` forms need an `ACCESS EXCLUSIVE` lock. The ALTER itself is instant, but it **waits** behind a long-running query (a report, or a transaction left idle). While it waits in the lock queue, every new query on that table queues **behind it**, connection pools fill up, and the API times out. Fix: `SET lock_timeout = '3s'` in migrations, so the ALTER fails fast and is retried instead of blocking everyone. Also kill or avoid long transactions (`idle_in_transaction_session_timeout`), and run DDL at quiet times. Detect it with `pg_blocking_pids()` and a "waiting on lock" alert.
 
-**Difficulty**  
-Intermediate
+### 26. [Mid] How do several workers take jobs from one Postgres table without taking the same job?
+*Chapter: [30](30-Database-Locks.md)*
 
+`SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED`, then mark the rows as running in the same transaction. `SKIP LOCKED` makes each worker skip rows another worker has locked, rather than waiting, so they claim disjoint batches. Either keep the transaction open while working (simple, but it holds a connection), or set a lease (`locked_until`) and commit, with a reaper that requeues expired leases. Handlers must still be idempotent, because a worker can crash after doing the work but before marking it done.
 
-### 11. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **14 Window Functions**.
+---
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 14 Window Functions, state assumptions, and name the signal that would prove success.
+## E. Working from application code
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+### 27. [Mid] What is the N+1 problem in ORMs, and how do you fix it in Prisma and SQLAlchemy?
+*Chapters: [33](33-ORM-Fundamentals.md), [26](26-Query-Anti-Patterns.md)*
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+You load N parent rows, then the ORM lazily runs one query per parent to load a relation: N+1 queries, each a network round trip. Fixes:
+- **Prisma:** `include` / `select` of the relation, which batches the relation into one query per level.
+- **SQLAlchemy 2.0:** `selectinload()` (one extra `IN` query per relation) or `joinedload()` (a single join; careful with `LIMIT` and row fan-out).
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+In SQLAlchemy you can set `lazy="raise"` so accidental lazy loads fail loudly; with asyncio they fail anyway. Guard it with a query-count assertion in tests.
 
-**Difficulty**  
-Intermediate
+### 28. [Senior] How do you rename a column with zero downtime?
+*Chapter: [34](34-Database-Migrations.md)*
 
+Use expand → migrate → contract across several deploys:
+1. **Expand:** add `full_name`, and keep both columns in sync with a trigger or dual writes in the app.
+2. **Backfill** in keyset batches with small transactions, throttled on replica lag.
+3. **Switch reads** to `full_name` in a new release, then stop writing `name`.
+4. **Contract:** drop `name` only after no deployed version uses it.
 
-### 12. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **16 Views**.
+Each migration sets `lock_timeout`. Index changes use `CREATE INDEX CONCURRENTLY`, outside a transaction. Old and new app versions must work with every intermediate schema, because during a rolling deploy both are running.
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 16 Views, state assumptions, and name the signal that would prove success.
+### 29. [Mid] Where should business logic live: in stored procedures or in the application?
+*Chapters: [18](18-Stored-Procedures-and-Functions.md), [16](16-Views.md)*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+Mostly in the application, where it is versioned, tested, reviewed and scaled horizontally. Database CPU is the hardest resource to scale. Put logic in the database when it **protects data integrity regardless of which client writes**: constraints, triggers for `updated_at` or audit history, row-level security for tenant isolation. Also when set-based work would otherwise cost thousands of round trips. Watch `SECURITY DEFINER` functions: pin `search_path`, or callers can hijack them.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+### 30. [Senior] Implement multi-tenant isolation so one tenant can never read another's rows, even if a developer forgets a `WHERE`.
+*Chapters: [16](16-Views.md), [05](05-Schema-Design.md)*
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+Add `tenant_id` to every tenant-owned table (and to the leading column of the relevant indexes). Then enable **row-level security** with a policy such as `USING (tenant_id = current_setting('app.tenant_id')::bigint)`. The app sets the tenant per transaction with `set_config('app.tenant_id', $1, true)`. It must be `true` (transaction-local) because pooled connections are shared between tenants; a session-level setting would leak to the next request. The app role must not own the tables (owners bypass RLS unless `FORCE ROW LEVEL SECURITY` is set), and must not have `BYPASSRLS`. Test it with a query that "forgets" the filter.
 
-**Difficulty**  
-Intermediate
+---
 
+## F. MongoDB
 
-### 13. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **18 Stored Procedures and Functions**.
+### 31. [Mid] Embed or reference: how do you decide in MongoDB?
+*Chapter: [36](36-Document-Modeling.md)*
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 18 Stored Procedures and Functions, state assumptions, and name the signal that would prove success.
+Model from access patterns. **Embed** data that is read together, owned by the parent, and bounded, such as an order's items, which are a snapshot at purchase time. **Reference** data that is shared, updated independently, or unbounded, such as a product's reviews. Never let an array grow without limit: documents have a 16 MB maximum, and huge arrays make every update expensive. Hybrid patterns help: embed the 10 most recent reviews (the subset pattern) and keep all reviews in their own collection.
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+### 32. [Mid] How do you prevent overselling in MongoDB without a transaction?
+*Chapters: [35](35-MongoDB-Fundamentals.md), [32](32-Optimistic-vs-Pessimistic-Locking.md)*
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+Use a single conditional atomic update: `updateOne({ _id: productId, stock: { $gte: qty } }, { $inc: { stock: -qty } })`, and check `modifiedCount`. Single-document writes are atomic, so the condition and the decrement cannot interleave. For a cart with several products you need either a multi-document transaction (on replica sets) or per-product conditional updates, with compensation if a later one fails.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 33. [Senior] What do write concern and read concern control, and what should payments use?
+*Chapters: [35](35-MongoDB-Fundamentals.md), [02](02-CAP-Theorem.md)*
 
-**Difficulty**  
-Intermediate
+**Write concern** controls how many replica set members must acknowledge a write before the driver reports success. `w: 1` is the primary only, and the write can be rolled back if the primary fails before replicating. `w: "majority"` survives failover. **Read concern** controls what data a read may see: `"local"` (possibly rolled back later), `"majority"` (durable), or `"linearizable"` (the latest, at a cost). Payments should use `w: "majority"` with a `wtimeout`, and treat a timeout as "unknown outcome": retry idempotently using a unique provider reference, rather than assuming failure.
 
+---
 
-### 14. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **20 Composite Indexes**.
+## G. Putting it together
 
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 20 Composite Indexes, state assumptions, and name the signal that would prove success.
+### 34. [Senior] Walk through what happens in the database when a customer places an order.
+*Chapters: all*
 
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
+1. The app checks out one connection and runs `BEGIN` (default READ COMMITTED).
+2. It decrements stock with conditional updates, locking product rows in ID order to avoid deadlocks. If any update affects 0 rows, it rolls back with "out of stock".
+3. It inserts the order and `order_items` (with `unit_price_cents` captured), plus an outbox row, in the same transaction.
+4. `COMMIT` writes and flushes a WAL record. That is the durability point, and only then does the app return 201.
+5. Indexes are updated as part of each write. MVCC means concurrent readers see the old snapshot until the commit.
+6. Asynchronous replicas apply the WAL shortly after, so a read-your-writes concern appears if the next page reads from a replica.
 
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
+Be ready to zoom into any step: isolation level choice, index impact, deadlock prevention, or what happens if the process crashes between steps.
 
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
+### 35. [Senior] The team says "Postgres can't scale, let's move to a NoSQL database." How do you respond?
+*Chapters: [04](04-Database-Selection.md), [23](23-Query-Optimization.md), [01](01-SQL-vs-NoSQL.md)*
 
-**Difficulty**  
-Intermediate
+Ask for the evidence: which queries, what load, which resource is saturated. Usually the bottleneck is fixable inside Postgres:
+- missing indexes or N+1 patterns (check `pg_stat_statements`)
+- connection exhaustion (add a pooler such as PgBouncer)
+- reads that could go to replicas
+- hot rows that need a different design
+- large tables that benefit from partitioning
 
-
-### 15. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **22 Query Execution Plans**.
-
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 22 Query Execution Plans, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Intermediate
-
-
-### 16. How do you make a create operation safe when a client retries?
-**Question**  
-Apply your answer to **24 Offset Pagination**.
-
-**Expected Answer**  
-Use an idempotency key, durable deduplication record, stable result replay, and bounded retention. Connect it to the invariant of 24 Offset Pagination, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Intermediate
-
-
-## Semi Senior
-
-### 17. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **18 Stored Procedures and Functions**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 18 Stored Procedures and Functions, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 18. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **20 Composite Indexes**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 20 Composite Indexes, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 19. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **22 Query Execution Plans**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 22 Query Execution Plans, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 20. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **24 Offset Pagination**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 24 Offset Pagination, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 21. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **26 Query Anti Patterns**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 26 Query Anti Patterns, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 22. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **28 ACID**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 28 ACID, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 23. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **30 Database Locks**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 30 Database Locks, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 24. How would you choose a timeout and retry policy for a dependency?
-**Question**  
-Apply your answer to **32 Optimistic vs Pessimistic Locking**.
-
-**Expected Answer**  
-Start from the end-to-end budget, classify errors, cap attempts, add jitter, and measure the outcome. Connect it to the invariant of 32 Optimistic vs Pessimistic Locking, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-## Senior
-
-### 25. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **26 Query Anti Patterns**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 26 Query Anti Patterns, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 26. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **28 ACID**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 28 ACID, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 27. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **30 Database Locks**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 30 Database Locks, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 28. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **32 Optimistic vs Pessimistic Locking**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 32 Optimistic vs Pessimistic Locking, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 29. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **34 Database Migrations**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 34 Database Migrations, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 30. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **36 Document Modeling**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 36 Document Modeling, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 31. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **02 CAP Theorem**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 02 CAP Theorem, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 32. When is adding a cache the wrong fix for latency?
-**Question**  
-Apply your answer to **04 Database Selection**.
-
-**Expected Answer**  
-When query shape, indexing, fan-out, payload size, contention, or capacity is the root cause; caches add invalidation and consistency cost. Connect it to the invariant of 04 Database Selection, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-## Architecture
-
-### 33. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **34 Database Migrations**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 34 Database Migrations, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 34. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **36 Document Modeling**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 36 Document Modeling, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 35. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **02 CAP Theorem**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 02 CAP Theorem, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 36. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **04 Database Selection**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 04 Database Selection, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 37. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **06 Normalization**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 06 Normalization, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 38. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **08 SQL DDL**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 08 SQL DDL, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 39. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **10 SQL JOINs**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 10 SQL JOINs, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 40. Design a boundary that permits framework replacement without rewriting policy.
-**Question**  
-Apply your answer to **12 EXISTS vs IN**.
-
-**Expected Answer**  
-Keep use cases and domain decisions inward; inject transport, persistence, and messaging adapters at a composition root. Connect it to the invariant of 12 EXISTS vs IN, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-## Scenario Based
-
-### 41. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **06 Normalization**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 06 Normalization, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 42. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **08 SQL DDL**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 08 SQL DDL, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 43. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **10 SQL JOINs**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 10 SQL JOINs, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 44. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **12 EXISTS vs IN**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 12 EXISTS vs IN, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 45. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **14 Window Functions**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 14 Window Functions, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 46. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **16 Views**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 16 Views, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 47. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **18 Stored Procedures and Functions**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 18 Stored Procedures and Functions, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 48. Checkout succeeds in the database but its notification is not sent. What do you do?
-**Question**  
-Apply your answer to **20 Composite Indexes**.
-
-**Expected Answer**  
-Use a transactional outbox, relay with idempotent consumers, observe delivery, and reconcile failures. Connect it to the invariant of 20 Composite Indexes, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-## Debugging
-
-### 49. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **14 Window Functions**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 14 Window Functions, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 50. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **16 Views**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 16 Views, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 51. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **18 Stored Procedures and Functions**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 18 Stored Procedures and Functions, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 52. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **20 Composite Indexes**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 20 Composite Indexes, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 53. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **22 Query Execution Plans**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 22 Query Execution Plans, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 54. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **24 Offset Pagination**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 24 Offset Pagination, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 55. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **26 Query Anti Patterns**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 26 Query Anti Patterns, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 56. p99 latency rose while average latency stayed stable. How do you investigate?
-**Question**  
-Apply your answer to **28 ACID**.
-
-**Expected Answer**  
-Correlate traces with saturation, queueing, slow dependencies, lock waits, GC/event-loop lag, and skewed traffic. Connect it to the invariant of 28 ACID, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-## Behavioral
-
-### 57. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **22 Query Execution Plans**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 22 Query Execution Plans, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 58. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **24 Offset Pagination**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 24 Offset Pagination, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 59. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **26 Query Anti Patterns**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 26 Query Anti Patterns, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 60. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **28 ACID**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 28 ACID, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 61. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **30 Database Locks**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 30 Database Locks, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 62. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **32 Optimistic vs Pessimistic Locking**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 32 Optimistic vs Pessimistic Locking, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 63. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **34 Database Migrations**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 34 Database Migrations, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
-
-### 64. Describe how you handled a risky production change.
-**Question**  
-Apply your answer to **36 Document Modeling**.
-
-**Expected Answer**  
-Explain context, risk assessment, rollback, stakeholder communication, telemetry, outcome, and what changed afterward. Connect it to the invariant of 36 Document Modeling, state assumptions, and name the signal that would prove success.
-
-**Follow-up Questions**  
-- What changes under high contention or dependency failure?
-- What would you measure before and after rollout?
-- What is the simplest safe rollback?
-
-**Common Mistakes**  
-Giving framework APIs without explaining correctness; omitting retries, authorization, or observability; assuming a happy-path test proves the design.
-
-**Why Interviewers Ask It**  
-It distinguishes memorized terminology from operational design judgment.
-
-**Difficulty**  
-Advanced
-
+A database migration is a multi-quarter project with new consistency and operations risks. Moving is justified when the access pattern really fits another model (e.g. massive key-value writes across regions), or when vertical scaling plus replicas has a clear, measured ceiling. Even then, consider adding a specialised store for one workload rather than replacing the primary.
