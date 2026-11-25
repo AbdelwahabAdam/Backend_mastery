@@ -1,291 +1,87 @@
-# Tasks
+# Module 04 Practice Tasks: Operating-System Labs for Backend Engineers
 
-Build tasks in order. A passing implementation is correct, bounded, observable, and documented—not merely functional on one happy-path input.
+These are labs: you run something, observe it with Linux tools, break it, and fix it. Do each lab in **Node.js/TypeScript** or **Python**, and port at least labs 3, 5 and 8 to the other runtime, writing down what behaved differently.
 
-## 1. Observe a service process
+**Setup:** a Linux machine, or `docker run -it --rm --cap-add SYS_PTRACE --cpus 2 --memory 512m ubuntu:24.04`. Then install `procps sysstat strace linux-tools-generic` (if available), Node.js 22+ and Python 3.12+.
 
-**Level:** Beginner
+Each lab is done when every item in its **Done when** list is backed by command output or a test you can show.
 
-**Objective**  
-Run a small FastAPI service and record PID, threads, file descriptors, RSS, sockets, and lifecycle events.
+---
 
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
+## Lab 1 — Look inside a running service
+**Chapters:** [01](01-Operating-Systems-Fundamentals.md), [02](02-Processes.md), [03](03-Threads.md) · **Level:** Beginner
 
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
+Run a tiny HTTP server (Express or FastAPI/uvicorn).
 
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
+**Done when**
+- [ ] You show its PID, parent PID, user, thread count and open file descriptors using only `ps`, `/proc/<pid>/status`, `/proc/<pid>/task` and `/proc/<pid>/fd`.
+- [ ] You explain every thread you see: for Node, the main thread, libuv pool and V8 helper threads; for uvicorn, the worker threads.
+- [ ] You read the container's CPU and memory limits from `/sys/fs/cgroup`, and print them from inside the app.
 
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
+## Lab 2 — PID 1, zombies and exit codes
+**Chapters:** [05](05-Process-Lifecycle.md), [29](29-Signals.md) · **Level:** Beginner
 
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
+**Done when**
+- [ ] A Dockerfile using `CMD npm start` (shell form) ignores `docker stop` for 10 s, and you explain why. The exec form plus `--init` (or `tini`) stops immediately and gracefully.
+- [ ] You create a zombie on purpose (a child that is never reaped), show `Z` in `ps`, then fix the parent.
+- [ ] You produce and explain exit codes 0, 1, 137 and 143.
 
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
+## Lab 3 — CPU quotas and worker counts
+**Chapters:** [07](07-CPU-Scheduling.md), [08](08-Context-Switching.md), [10](10-Parallelism.md) · **Level:** Intermediate
 
-**Real-world Context**  
-An on-call engineer needs a baseline before diagnosing an intermittent resource leak.
+Run a CPU-heavy endpoint in a container limited to `--cpus 1` on a machine with more cores.
 
-## 2. Bounded producer-consumer queue
+**Done when**
+- [ ] With workers = host core count (e.g. 8 Node cluster workers or 8 uvicorn workers), you capture throttling in `cpu.stat` (`nr_throttled`, `throttled_usec`) and the p99 latency under load.
+- [ ] Sizing workers from the cgroup quota instead lowers p99. You show both numbers.
+- [ ] You report voluntary and involuntary context switches for each setup from `/proc/<pid>/status` or `pidstat -w`.
+- [ ] You compute the theoretical speed-up with Amdahl's law for a job that is 20% serial, and compare it to what you measured with 1, 2 and 4 workers.
 
-**Level:** Beginner
+## Lab 4 — Race-condition clinic
+**Chapters:** [11](11-Synchronization.md)–[16](16-Spinlocks.md) · **Level:** Intermediate
 
-**Objective**  
-Implement a bounded Python worker queue with shutdown signaling, timeouts, and queue-depth metrics.
+**Done when**
+- [ ] A shared counter incremented 1,000,000 times by 4 threads (Python) or 4 workers on a `SharedArrayBuffer` (Node) loses updates. Show the wrong total.
+- [ ] You fix it twice: once with a lock, and once with an atomic operation (`Atomics.add`, or a design that avoids sharing). You compare the timings.
+- [ ] An **async** check-then-act race (two concurrent requests both "reserve" the last seat across an `await`) is reproduced in a test and fixed with a per-key async mutex.
+- [ ] A semaphore limits calls to a slow fake dependency to 5 in flight, and a test proves the limit holds and that permits are released on timeout and on error.
 
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
+## Lab 5 — Deadlock, livelock, starvation
+**Chapters:** [17](17-Condition-Variables.md)–[20](20-Starvation.md) · **Level:** Intermediate
 
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
+**Done when**
+- [ ] Two tasks taking two locks in opposite order hang. You capture where each one is stuck (Python `faulthandler`/`py-spy dump`, or a Node diagnostic report), then fix it with a global lock order.
+- [ ] A "try-lock, release, retry immediately" version livelocks (high CPU, zero progress); randomized backoff fixes it.
+- [ ] One noisy tenant starves others in a single FIFO queue. Per-tenant round-robin brings the quiet tenants' p95 wait time down; you show before and after numbers.
+- [ ] A bounded producer–consumer queue built on a condition variable (Python) or Promise-based waiting (Node) never busy-waits: show near-zero CPU while idle.
 
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
+## Lab 6 — Memory: leaks and OOM kills
+**Chapters:** [21](21-Memory-Management.md)–[25](25-Paging.md) · **Level:** Advanced
 
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
+**Done when**
+- [ ] An endpoint with an unbounded in-memory cache grows RSS under load until the container is OOM-killed. You show exit code 137 and the `oom_kill` counter in `memory.events`.
+- [ ] You find the leak with a heap snapshot diff (Node) or a `tracemalloc` snapshot diff (Python), and fix it with a bounded LRU cache.
+- [ ] For Node, you set `--max-old-space-size` below the container limit and explain what changes. For Python, you show total RSS for 4 workers, with and without `--preload` / `gc.freeze()`.
+- [ ] You show minor and major page-fault counts before and after reading a large file twice, and explain the difference using the page cache.
 
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
+## Lab 7 — System calls and file descriptors
+**Chapters:** [27](27-System-Calls.md), [28](28-Inter-Process-Communication.md), [30](30-File-Systems-Basics.md), [31](31-I-O-Operations.md) · **Level:** Advanced
 
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
+**Done when**
+- [ ] `strace -f -c` on one HTTP request shows the syscall summary. You identify `accept4`, `epoll_wait`, `read` and `write`, and explain each.
+- [ ] Writing 100k small lines unbuffered and then buffered: you show the difference in `write` syscall counts.
+- [ ] An FD leak (files or sockets never closed) reaches `EMFILE` with `ulimit -n 256`. You detect it by counting `/proc/self/fd`, and fix it.
+- [ ] A config file is replaced atomically (temp file → `fsync` → `rename`), and a reader running in a loop never sees a half-written file.
+- [ ] Two processes exchange newline-delimited JSON over a Unix domain socket. You compare its latency with TCP loopback.
 
-**Real-world Context**  
-A document ingestion service must protect PostgreSQL when load spikes.
+## Lab 8 — Capstone: a well-behaved worker service
+**Chapters:** [29](29-Signals.md), [32](32-Backend-Concurrency-Patterns.md) and all previous · **Level:** Advanced
 
-## 3. Race-condition laboratory
+Build a job-processing service: an HTTP endpoint enqueues jobs, and a pool of workers processes them (half CPU-bound, half I/O-bound).
 
-**Level:** Intermediate
-
-**Objective**  
-Reproduce a duplicate-reservation race, fix it using the correct in-process and database mechanisms, and explain the difference.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A checkout service is producing duplicate inventory allocations.
-
-## 4. Deadlock and recovery simulation
-
-**Level:** Intermediate
-
-**Objective**  
-Create competing resource acquisition, detect/observe the deadlock, apply ordering/timeouts, and test retry behavior.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-Two services update order and inventory records in inconsistent order.
-
-## 5. Memory-pressure resilient worker
-
-**Level:** Advanced
-
-**Objective**  
-Stream input, apply backpressure, honor cgroup limits, and demonstrate graceful behavior under induced memory pressure.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A batch processor is OOM-killed while handling large customer exports.
-
-## 6. Graceful container shutdown
-
-**Level:** Advanced
-
-**Objective**  
-Implement SIGTERM draining, readiness transitions, job lease/requeue policy, and deadline-based exit in Docker.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-Kubernetes deploys a new version while long-running jobs are active.
-
-## 7. Concurrent job processor
-
-**Level:** Production
-
-**Objective**  
-Build an observable job processor with bounded workers, idempotency, durable state, retry classification, metrics, and a recovery runbook.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A billing platform needs reliable asynchronous invoice generation.
-
-## 8. OS and concurrency capstone
-
-**Level:** Production
-
-**Objective**  
-Build a Dockerized multi-replica FastAPI task scheduler using PostgreSQL and Redis. Include producer-consumer queues, leases/idempotency, cancellation, cgroup-aware limits, graceful shutdown, deadlock-safe database updates, load testing, dashboards, and incident runbooks.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-This is evaluated as a platform/service architecture review by backend, database, and SRE engineers.
+**Done when**
+- [ ] The worker pool is sized from the cgroup CPU quota for CPU work, and from Little's law for I/O work. Your README shows the arithmetic.
+- [ ] The queue is bounded; when it is full, the API returns `503` with `Retry-After` instead of growing memory.
+- [ ] Concurrent requests for the same expensive key are coalesced (single-flight), and a test proves only one computation runs.
+- [ ] On `SIGTERM`: stop accepting, finish in-flight jobs within 20 s, hand back unfinished jobs, exit 0. Verified with `docker stop` while under load.
+- [ ] A one-page report shows CPU, RSS, context switches, FD count and p99 latency at three load levels, with the commands used to collect them.

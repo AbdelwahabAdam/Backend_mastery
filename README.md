@@ -12,7 +12,7 @@ It covers core backend work, databases, operating systems, algorithms, networkin
 4. Complete the module tasks with real code, tests, metrics, and failure scenarios.
 5. Revisit related-topic links whenever a design decision crosses module boundaries.
 
-Code examples are given in both **Node.js/TypeScript** and **Python**. Modules 02 and 03 have been rewritten to this standard; the other modules are being rewritten one by one. Chapters follow [CHAPTER-GUIDE.md](CHAPTER-GUIDE.md), and `python scripts/check_chapters.py <Module-folder>` checks structure, both languages, duplicated filler and broken links.
+Code examples are given in both **Node.js/TypeScript** and **Python**. Modules 02, 03 and 04 have been rewritten to this standard; the other modules are being rewritten one by one. Chapters follow [CHAPTER-GUIDE.md](CHAPTER-GUIDE.md), and `python scripts/check_chapters.py <Module-folder>` checks structure, both languages, duplicated filler and broken links.
 
 ## Recommended study order
 

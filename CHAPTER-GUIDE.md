@@ -74,6 +74,28 @@ At least two must be Senior-level (trade-offs, failure scenarios, design decisio
 - **Shared schema:** use the sample schema in `Module-03-Databases/README.md` (customers, products, inventory, orders, order_items, payments). Add tables or indexes in the chapter when needed, and show their DDL.
 - **Plans and output:** show `EXPLAIN (ANALYZE, BUFFERS)` output or query results when they teach something. Label them "illustrative output" and keep them realistic: node types, row estimates and timings must be consistent with each other.
 
+## Operating-systems chapters (Module 04)
+
+- **Teach the OS concept, then show how it appears in each runtime.** Node: `worker_threads`, `child_process`, `cluster`, `SharedArrayBuffer` + `Atomics`, `process.on('SIGTERM')`, `fs` / streams, libuv. Python: `threading`, `multiprocessing` / `concurrent.futures`, `asyncio`, the GIL (and free-threaded 3.13+ builds, stated carefully), `signal`, `os`, `mmap`.
+- **Linux is the reference OS.** In section 2 or 5, include the commands that let you *observe* the concept: `ps`, `top`/`htop`, `/proc/<pid>/status`, `/proc/<pid>/maps`, `strace`, `perf`, `vmstat`, `lsof`, `ss`, `pidstat`. Show realistic, labelled "illustrative output".
+- **Section 4 may start with `### Shell`** for observation commands, then `### Node.js / TypeScript`, then `### Python`. Use C only if a concept cannot be shown otherwise, and keep it under 20 lines.
+- **Containers matter.** When relevant, explain how cgroup CPU and memory limits change the picture: CPU quota throttling, OOM kills, `os.availableParallelism()` / `os.cpu_count()` vs the container quota, and the V8 heap vs the container memory limit.
+
+## Data structures and algorithms chapters (Module 05)
+
+- **Section 2 shows the algorithm working on a small concrete input:** a step-by-step trace table or diagram (e.g. the array after each partition step, the BFS queue at each level).
+- **Section 3 includes a complexity table:** best, average and worst time, plus extra space, for every operation or variant. Say *why* each bound holds (e.g. "each element is pushed and popped once → O(n)"), and state amortized vs worst case explicitly.
+- **Section 4 has two parts per language:**
+  1. A clean, tested implementation of the structure or algorithm (typed TS; typed Python with type hints).
+  2. One or two classic interview problems solved with it, each with the problem statement in one line, the approach, and the complexity.
+
+  Use the same problems in both languages. Implementations must handle edge cases (empty input, one element, duplicates).
+- **Built-ins first:** say what each language already provides and its guarantees, and when to use it instead of writing your own. Examples:
+  - JS `Array`, `Map`/`Set` insertion order, `Array.prototype.sort` being stable;
+  - Python `list`, `dict` order, `collections.deque`, `heapq` (min-heap only), `bisect`, `functools.lru_cache`.
+- **Backend relevance is required:** name a real backend use (database B-trees, Redis sorted sets, rate limiters, schedulers, dependency resolution, autocomplete) — specific, not generic.
+- **Interview questions** in section 8 mix concept questions with "how would you solve X" questions that name the pattern and its complexity.
+
 ## Accuracy rules
 
 - Prefer primary sources: RFCs (e.g. RFC 9110 HTTP semantics, RFC 6265 cookies, RFC 7519 JWT, RFC 9457 problem details), OWASP cheat sheets, official library docs.
