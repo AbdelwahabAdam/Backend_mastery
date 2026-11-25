@@ -1,291 +1,95 @@
-# Tasks
-
-Build tasks in order. A passing implementation is correct, bounded, observable, and documented—not merely functional on one happy-path input.
-
-## 1. Complexity test harness
-
-**Level:** Beginner
-
-**Objective**  
-Implement naive and optimized versions of a lookup problem, test them against each other, and graph runtime/memory across input sizes.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A service team needs evidence before replacing a simple implementation.
-
-## 2. LRU cache
-
-**Level:** Beginner
-
-**Objective**  
-Build a bounded LRU cache with tests for eviction and update behavior.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-An API needs to reduce repeated reads while keeping memory bounded.
-
-## 3. Autocomplete trie
-
-**Level:** Intermediate
-
-**Objective**  
-Build a Unicode-aware prefix search with bounded results, ranking, and a benchmark.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A search endpoint needs fast suggestions without scanning all terms.
-
-## 4. Sliding-window rate limiter
-
-**Level:** Intermediate
-
-**Objective**  
-Implement a rate limiter with correct window semantics and compare in-memory versus Redis behavior.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A public API needs fair protection from bursty clients.
-
-## 5. Dependency graph resolver
-
-**Level:** Advanced
-
-**Objective**  
-Implement topological sorting with cycle reporting and incremental test fixtures.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A deployment platform must order service migrations safely.
-
-## 6. Top-k scheduler
-
-**Level:** Advanced
-
-**Objective**  
-Use a heap-backed queue with tie-breakers, cancellation, and fair admission policy.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A worker fleet must select urgent work without starving older jobs.
-
-## 7. Distributed cache design
-
-**Level:** Production
-
-**Objective**  
-Design a cache with LRU/TTL, key cardinality controls, consistent-hash routing, invalidation strategy, and observability.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-A high-traffic read API is approaching database capacity.
-
-## 8. DSA capstone
-
-**Level:** Production
-
-**Objective**  
-Build an in-memory and Redis-backed rate-limited URL shortener/analytics service using hash maps, LRU cache, queue/heap scheduling, sliding windows, prefix-search trie, and consistent hashing simulation. Include FastAPI, Docker, load tests, correctness oracle, dashboards, and a scaling design.
-
-**Requirements**  
-- Define the invariant, input limits, and failure outcomes.
-- Include unit tests and an integration/load test for one adverse condition.
-- Emit structured logs and the metrics needed to diagnose saturation or incorrectness.
-
-**Constraints**  
-- Bound memory, concurrency, queue size, and timeouts.
-- Do not log secrets or unbounded user payloads.
-- State whether correctness is process-local or durable across replicas.
-
-**Expected Output**  
-Runnable Docker-based implementation, README, tests, benchmark/load result, metrics/dashboard definitions, and an architecture decision record.
-
-**Hints**  
-Build a tiny correct baseline first, write an invariant, then introduce the bounded optimization. Use a naive implementation as a test oracle when possible.
-
-**Stretch Goals**  
-Add failure injection, profiling, cancellation, graceful shutdown, tracing, a feature flag, and a rollback runbook.
-
-**Evaluation Checklist**  
-- [ ] Edge and failure cases preserve the invariant.
-- [ ] Resource use is bounded and measurable.
-- [ ] The design works across restart/retry where required.
-- [ ] Results include data, not only a claim of performance.
-- [ ] Documentation explains trade-offs and ownership.
-
-**Real-world Context**  
-This models an interview loop plus production architecture review for a high-traffic backend platform.
+# Module 05 Practice Tasks: Implement, Solve, Apply
+
+Three kinds of practice:
+
+1. **Implement** core structures from scratch, with tests.
+2. **Solve** timed problem sets the way an interview runs them.
+3. **Apply** algorithms to small backend components.
+
+Do the implementation tasks in **both TypeScript and Python**. Do the problem sets in the language you will interview in, then re-solve three problems in the other one.
+
+**Rules for every task:**
+- State the time and space complexity **before** you code.
+- Write tests for empty input, one element, duplicates, and the largest input you claim to support.
+- Use your own implementation first, then compare it with the built-in (`Map`, `heapq`, `bisect`, `deque`…).
+
+---
+
+## Task 1 — Complexity lab
+**Chapters:** [02](02-Time-Complexity.md)–[05](05-Arrays.md) · **Level:** Beginner
+
+**Done when**
+- [ ] You time functions of O(1), O(log n), O(n), O(n log n) and O(n²) for n = 10³…10⁶, and plot or tabulate the results. You can explain any curve that doesn't match its class.
+- [ ] An instrumented dynamic array counts element copies over 1,000,000 appends, showing amortized O(1). The same array growing by +10 instead of ×2 shows O(n²) copies.
+- [ ] You show the cost of repeated string concatenation vs `join`/array-join for building a 10 MB string.
+
+## Task 2 — Linear structures from scratch
+**Chapters:** [07](07-Linked-Lists.md)–[10](10-Deque.md) · **Level:** Beginner
+
+**Done when**
+- [ ] A doubly linked list supports O(1) insert/remove given a node, with sentinel nodes, and its tests pass.
+- [ ] A ring-buffer queue and a deque have O(1) operations at both ends, and grow when full. A benchmark shows `Array.prototype.shift()` / `list.pop(0)` slowing down as n grows, while yours does not.
+- [ ] Problems solved: valid parentheses, Floyd cycle detection, and implement-queue-with-two-stacks.
+
+## Task 3 — Hashing and heaps
+**Chapters:** [11](11-Hash-Tables.md)–[14](14-Heaps.md) · **Level:** Intermediate
+
+**Done when**
+- [ ] A hash map with separate chaining resizes at load factor 0.75. A test with adversarial keys that all hash the same way shows O(n) degradation.
+- [ ] A binary min-heap supports `push`, `pop`, `peek` and O(n) `heapify`. Its sorted output matches `heapq`/a sorted copy on 10,000 random inputs.
+- [ ] Problems solved: two sum, group anagrams, top K frequent elements (heap version), and find median from a data stream.
+
+## Task 4 — Trees and tries
+**Chapters:** [15](15-Trees.md)–[19](19-Tries.md) · **Level:** Intermediate
+
+**Done when**
+- [ ] A BST supports insert, delete (all three cases), search and in-order iteration, and is validated after every operation in a randomized test.
+- [ ] You insert 10,000 sorted keys into your BST and into a balanced structure (AVL, or a sorted list with `bisect`), and report the tree height or operation cost for each.
+- [ ] A trie-based autocomplete returns the top 5 completions by frequency for a 50,000-word list in under 5 ms per query.
+- [ ] Problems solved: validate BST, lowest common ancestor, and serialize/deserialize a binary tree.
+
+## Task 5 — Graphs, search and sorting
+**Chapters:** [20](20-Graphs.md)–[29](29-Heap-Sort.md) · **Level:** Intermediate
+
+**Done when**
+- [ ] BFS returns the shortest path (as a list of nodes) on a grid with walls, and iterative DFS finds connected components with no recursion-depth limit.
+- [ ] Binary search passes a property test against a linear scan for `lower_bound` and `upper_bound` on 10,000 random sorted arrays with duplicates.
+- [ ] Merge sort, quicksort (random pivot, three-way partition) and heap sort all match the built-in sort on random, sorted, reversed and all-equal inputs. A table compares their times.
+- [ ] You show the JS `[10, 9, 1].sort()` pitfall and fix it.
+- [ ] Problems solved: number of islands, word ladder, search in a rotated sorted array, and kth largest element (quickselect).
+
+## Task 6 — Pattern drills (timed)
+**Chapters:** [30](30-Two-Pointers.md)–[40](40-Monotonic-Queue.md) · **Level:** Advanced
+
+Solve each problem in **25 minutes or less**, speaking your approach aloud or writing it down first. Record your time, and whether you needed a hint.
+
+**Done when**
+- [ ] Two pointers: container with most water; 3Sum.
+- [ ] Sliding window: longest substring without repeating characters; minimum window substring.
+- [ ] Prefix sum / difference array: subarray sum equals K; car pooling.
+- [ ] Greedy: non-overlapping intervals; meeting rooms II.
+- [ ] Backtracking: subsets; combination sum.
+- [ ] Dynamic programming: house robber; edit distance (with both top-down and bottom-up versions).
+- [ ] Union–find and topological sort: redundant connection; course schedule II.
+- [ ] Monotonic stack/queue: daily temperatures; sliding window maximum.
+- [ ] A one-page "pattern recognition" cheat sheet, in your own words: which problem signals point to which pattern.
+
+## Task 7 — Backend components
+**Chapters:** [41](41-Backend-DSA-Patterns.md)–[43](43-LRU-Cache.md) · **Level:** Advanced
+
+**Done when**
+- [ ] An LRU cache with O(1) `get`/`put` (hash map plus doubly linked list) passes a randomized test against a reference that uses `Map` insertion order / `OrderedDict`.
+- [ ] A TTL cache with lazy expiry, plus a background sweep, keeps memory bounded under a load test.
+- [ ] A Bloom filter sized for 1,000,000 items at a 1% false-positive rate shows a measured false-positive rate close to 1%, and **zero** false negatives.
+- [ ] A token-bucket rate limiter and a sliding-window-log limiter both enforce 100 requests per minute per user. You compare their memory per user and their accuracy at window boundaries.
+
+## Task 8 — Capstone: shard a cache cluster
+**Chapters:** [44](44-Consistent-Hashing-Basics.md), plus [42](42-Cache-Data-Structures.md)–[43](43-LRU-Cache.md) · **Level:** Advanced
+
+Build a small in-process "cluster" of N cache nodes (each one an LRU from Task 7) behind a router.
+
+**Done when**
+- [ ] With `hash(key) % N`, you measure the share of keys that move when going from 4 to 5 nodes.
+- [ ] With a consistent-hash ring using 100 virtual nodes per server, the same change moves about 1/5 of the keys. You report the load spread across nodes as min/max/standard deviation.
+- [ ] Replication factor 2 places each key on two distinct physical nodes, and reads still succeed after one node is removed.
+- [ ] A README explains the trade-offs in a way you could repeat in a system-design interview: virtual-node count, hot keys, and rendezvous hashing as the alternative.
